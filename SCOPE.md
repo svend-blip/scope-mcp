@@ -256,6 +256,17 @@ The repository is memory.
 
 Do not copy large amounts of source code or conversation history into project state.
 
+### Automatic checkpoint and automatic resume
+
+Both halves should normally happen without the user asking.
+
+* A checkpoint is persisted before useful working context is lost, using DeepSeek Harness's own lifecycle mechanism (hook/plugin extension point) rather than a scheduler, daemon, background monitor, or polling loop.
+* After compaction or a fresh context, the agent reads the persisted state and continues from the recorded next action without the user reconstructing previous progress.
+* Prefer a native Harness extension point. Where the installed Harness version has no suitable pre-compaction event, use the smallest reliable alternative that achieves the same practical result and document that limitation.
+* Ordinary short sessions must not accumulate excessive or unnecessary checkpoints.
+
+`scope-mcp` stays responsible for durable project/work state only: it does not duplicate Harness session persistence, does not add multi-agent behaviour, and does not manage contexts itself.
+
 ## 10. Virtual Long-Running Context
 
 The system should make it practical for a model with a finite context window, such as 256K, to complete projects requiring substantially more total work across multiple context windows.
@@ -371,6 +382,9 @@ At minimum test:
 * blocker persistence
 * completion state
 * invalid state transitions where relevant
+* automatic checkpoint through the chosen Harness integration mechanism
+* resume in a fresh context from persisted state alone, including the next action
+* ordinary short sessions producing no unnecessary checkpoints
 
 Keep tests proportional to the simplicity of the project.
 
@@ -385,6 +399,9 @@ Provide a concise README explaining:
 * how to connect it to DeepSeek Harness
 * how to start a new scope-driven project
 * how state/checkpoint/resume works
+* how automatic checkpointing works and what triggers it
+* how automatic resume works, and which Harness configuration it needs
+* limitations of the current DeepSeek Harness version
 * how to inspect current state
 
 The primary usage should be extremely easy.
@@ -425,8 +442,8 @@ The project is complete when:
 4. The model can determine and persist current progress.
 5. Completed and pending work survives restart.
 6. Important decisions and validation state survive restart.
-7. The model can checkpoint before context compaction.
-8. A subsequent/fresh context can inspect state and resume work.
+7. The model can checkpoint before context compaction, and ordinary turn boundaries checkpoint automatically through Harness hooks.
+8. A subsequent/fresh context can inspect state and resume work automatically, without the user restating previous progress.
 9. The model can evaluate scope coverage before completion.
 10. The MCP server does not contain unnecessary planning or orchestration intelligence.
 11. Automated tests pass.

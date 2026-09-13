@@ -11,6 +11,9 @@ import { dirname } from 'node:path';
 export const GOAL_STATUSES = ['pending', 'active', 'completed', 'blocked'];
 export const COVERAGE_STATUSES = ['fulfilled', 'deferred', 'missing'];
 
+/** How many checkpoint rows to keep; older ones carry nothing a resume needs. */
+export const CHECKPOINT_KEEP = 50;
+
 /** Where the state file lives for this workspace. */
 export function defaultDbPath(cwd = process.cwd()) {
   const fromEnv = process.env.SCOPE_MCP_DB;
@@ -20,6 +23,12 @@ export function defaultDbPath(cwd = process.cwd()) {
 
 function now() {
   return new Date().toISOString();
+}
+
+/** Keep injected one-liners short without losing the point. */
+function truncate(value, max) {
+  const text = String(value);
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
 export class ProjectState {
@@ -229,7 +238,34 @@ export class ProjectState {
 
   // ---- checkpoints ------------------------------------------------------
 
-  /** Snapshot the working position. Missing fields are derived from state. */
+  /** True when something meaningful is recorded, so a checkpoint would say something. */
+  hasTrackedWork() {
+    const any = (sql) => this.db.prepare(sql).get() !== undefined;
+    return Boolean(
+      any('SELECT 1 FROM goals LIMIT 1') ||
+        any('SELECT 1 FROM decisions LIMIT 1') ||
+        any("SELECT 1 FROM blockers WHERE resolved_at = '' LIMIT 1") ||
+        any('SELECT 1 FROM coverage LIMIT 1')
+    );
+  }
+
+  /** Deterministic next action for checkpoints that arrive without explicit fields. */
+  derivedNextAction() {
+    const active = this.activeGoalRow();
+    const stored = this.meta('next_action');
+    // A stored instruction survives while it still fits the current goal; the
+    // auto form is refreshed whenever the active goal moves on.
+    if (stored && (!active || stored.includes(active.id) || !stored.startsWith('continue '))) return stored;
+    if (active) return `continue ${active.id}: ${active.title}`;
+    if (this.goalRows().length) return 'record coverage for the remaining scope requirements, then complete_project';
+    return stored ?? '';
+  }
+
+  /**
+   * Snapshot the working position. Missing fields are derived from stored state.
+   * An empty store writes nothing, and a snapshot identical to the previous one
+   * reuses it, so hook-driven checkpoints stay cheap in ordinary short sessions.
+   */
   checkpoint(fields = {}) {
     const active = this.activeGoalRow();
     const payload = {
@@ -238,9 +274,22 @@ export class ProjectState {
       important_decisions: fields.important_decisions ?? this.decisions(5).map((d) => d.text).join('; '),
       validation_state: fields.validation_state ?? this.validationState(),
       unresolved_issues: fields.unresolved_issues ?? this.openBlockers().map((b) => b.text).join('; '),
-      next_action: fields.next_action ?? this.meta('next_action') ?? ''
+      next_action: fields.next_action ?? this.derivedNextAction()
     };
+
+    const previous = this.lastCheckpoint();
+    if (previous && JSON.stringify(previous.payload) === JSON.stringify(payload)) {
+      return { ...previous, unchanged: true };
+    }
+    const meaningful = ['current_goal', 'work_completed', 'important_decisions', 'unresolved_issues', 'next_action'].some(
+      (key) => payload[key]
+    );
+    if (!meaningful && !this.hasTrackedWork()) return null;
+
     this.db.prepare('INSERT INTO checkpoints (at, payload) VALUES (?, ?)').run(now(), JSON.stringify(payload));
+    this.db
+      .prepare('DELETE FROM checkpoints WHERE seq <= (SELECT MAX(seq) FROM checkpoints) - ?')
+      .run(CHECKPOINT_KEEP);
     this.setMeta('next_action', payload.next_action);
     return { at: this.lastCheckpointAt(), payload };
   }
@@ -295,6 +344,30 @@ export class ProjectState {
   }
 
   // ---- reporting --------------------------------------------------------
+
+  /**
+   * Compact resume block for automatic injection into a fresh context: goal,
+   * next action, progress, blockers. Fewer lines than `statusText`, same source.
+   */
+  resumeBrief({ decisions = 3 } = {}) {
+    const active = this.activeGoalRow();
+    const cp = this.lastCheckpoint();
+    const lines = [];
+    const objective = this.meta('objective');
+    if (objective) lines.push(`objective: ${truncate(objective, 160)}`);
+    lines.push(`current goal: ${active ? `${active.id}: ${active.title}` : this.goalRows().length ? '(none active)' : '(none)'}`);
+    const next = cp?.payload.next_action || this.derivedNextAction();
+    lines.push(`next action: ${next || '(unset - read SCOPE.md and call status)'}`);
+    const done = this.validations();
+    lines.push(`completed: ${done.length ? done.map((v) => `${v.id} (${v.validation})`).join(', ') : '(nothing yet)'}`);
+    const blockers = this.openBlockers();
+    if (blockers.length) lines.push(`blockers: ${blockers.map((b) => b.text).join('; ')}`);
+    const decided = this.decisions(decisions);
+    if (decided.length) lines.push(`decisions: ${decided.map((d) => d.text).join('; ')}`);
+    lines.push(`checkpoint: ${cp ? cp.at : '(none)'}`);
+    lines.push('continue autonomously from the next action; call scope-mcp status for the full position.');
+    return lines.join('\n');
+  }
 
   /** Human-readable working position. This is the resume surface. */
   statusText({ decisions = 8 } = {}) {

@@ -151,7 +151,7 @@ export function registerTools(server, store) {
     {
       title: 'Checkpoint work state before compaction',
       description:
-        'Snapshot the working position so a fresh context can resume: current goal, work completed, important decisions, validation state, unresolved issues, next action. Omitted fields are filled from stored state. Call before context compaction or when ending a session.',
+        'Snapshot the working position so a fresh context can resume: current goal, work completed, important decisions, validation state, unresolved issues, next action. Omitted fields are filled from stored state. Harness hooks call this automatically at turn boundaries; call it directly only to add a more precise next_action.',
       inputSchema: {
         current_goal: z.string().optional(),
         work_completed: z.string().optional(),
@@ -163,7 +163,8 @@ export function registerTools(server, store) {
     },
     (fields) => {
       const cp = store.checkpoint(fields);
-      const lines = [`checkpoint at ${cp.at}`];
+      if (!cp) return text('nothing to checkpoint yet - no goals, decisions, blockers, or coverage recorded');
+      const lines = [cp.unchanged ? `checkpoint unchanged at ${cp.at}` : `checkpoint at ${cp.at}`];
       for (const [key, value] of Object.entries(cp.payload)) lines.push(`  ${key}: ${value || '(unset)'}`);
       return text(lines.join('\n'));
     }

@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/svend/.nvm/versions/node/v22.22.3/bin/node /home/svend/scope-mcp/src/server.js hook session-start",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/svend/.nvm/versions/node/v22.22.3/bin/node /home/svend/scope-mcp/src/server.js hook prompt-submit",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/svend/.nvm/versions/node/v22.22.3/bin/node /home/svend/scope-mcp/src/server.js hook stop",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
