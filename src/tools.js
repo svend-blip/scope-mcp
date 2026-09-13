@@ -32,7 +32,7 @@ export function registerTools(server, store) {
     {
       title: 'Initialize project from accepted scope',
       description:
-        'Record the project objective and scope file. Idempotent: safe to call from a fresh context to refresh metadata and get back the current working position. Pass reset=true to clear tracked state and start over.',
+        'Record the project objective and scope file. Idempotent: safe to call from a fresh context to refresh metadata and get back the current working position. Pass reset=true to clear tracked state and start over (accepted scope documents are kept).',
       inputSchema: {
         objective: z.string().describe('One-paragraph project objective from the scope.'),
         scope_file: z.string().optional().describe('Path of the scope file, default SCOPE.md.'),
@@ -49,10 +49,61 @@ export function registerTools(server, store) {
     {
       title: 'Inspect project status',
       description:
-        'Human-readable working position: objective, scope status, current goal, completed/pending goals, validation state, coverage summary, open blockers, recent decisions, last checkpoint. Call this first when resuming after compaction or restart.',
+        'Human-readable working position: objective, effective scope summary, current goal, completed/pending goals, validation state, coverage summary, open blockers, recent decisions, accepted scope documents, last checkpoint. Call this first when resuming after compaction or restart, then get_effective_scope before reconciling goals.',
       inputSchema: {}
     },
     () => text(store.statusText())
+  );
+
+  server.registerTool(
+    'record_scope',
+    {
+      title: 'Record the accepted base scope',
+      description:
+        'Persist the accepted base scope text as durable project intent, so a fresh context never needs it pasted again. A later base record supersedes earlier ones; recorded addenda stay available in order.',
+      inputSchema: {
+        text: z.string().describe('The accepted base scope.'),
+        title: z.string().optional().describe('Optional short label for this scope record.')
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
+    },
+    ({ text: body, title }) => {
+      const doc = store.recordScope({ text: body, title });
+      return text(`base scope #${doc.seq} accepted ${doc.at}${title ? ` (${title})` : ''}`);
+    }
+  );
+
+  server.registerTool(
+    'add_scope_addendum',
+    {
+      title: 'Append an accepted scope addendum',
+      description:
+        'Append one accepted addendum after the current base scope, in recorded order. Effective scope is the base plus its active addenda in order; reconciling them is the model\'s job.',
+      inputSchema: {
+        text: z.string().describe('The accepted addendum.'),
+        title: z.string().optional().describe('Optional short label for this addendum.')
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
+    },
+    ({ text: body, title }) => {
+      const doc = store.addScopeAddendum({ text: body, title });
+      return text(`addendum #${doc.seq} accepted ${doc.at}${title ? ` (${title})` : ''}`);
+    }
+  );
+
+  server.registerTool(
+    'get_effective_scope',
+    {
+      title: 'Read the effective scope',
+      description:
+        'Base scope plus its accepted addenda in order, with acceptance timestamps. Read this before reconciling goals and coverage after a cold start or fresh context.',
+      inputSchema: {}
+    },
+    () => {
+      const scope = store.effectiveScope();
+      if (!scope) return text('(no scope documents recorded - the scope file on disk is the contract)');
+      return text(`${scope.text}\n\n(${scope.addenda.length} addendum(s) after the base)`);
+    }
   );
 
   server.registerTool(

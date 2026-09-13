@@ -147,6 +147,10 @@ User intervention should be requested only when:
 * execution is genuinely blocked
 * proceeding would create significant risk of violating the scope
 
+The accepted scope and every later accepted addendum should also be persisted as durable project intent inside `scope-mcp`: one ordered base scope record plus its addenda, each with an acceptance timestamp and an active/effective flag. A cold start or fresh session then reconstructs the effective scope by loading the base record and its addenda in order, loads existing goals, progress, decisions, blockers and checkpoints, reconciles goals and coverage against that effective scope, preserves completed valid work, adjusts goals only where the effective scope requires it, and resumes from the recorded current goal / next action. The user should not need to paste the original scope or prior addenda again after a restart.
+
+Reconciliation and interpretation stay with the model. `scope-mcp` only persists ordered scope documents and exposes them reliably: no version-control system for scopes, no workflow engine, no semantic planner inside the server.
+
 ## 6. Lightweight Goals
 
 The user should NOT normally create goals manually.
@@ -182,6 +186,7 @@ At minimum the state must make it possible to determine:
 
 * project objective
 * scope status
+* accepted base scope and its ordered addenda, with acceptance order, timestamps, and active/effective status
 * current goal
 * completed goals
 * pending goals
@@ -206,6 +211,9 @@ Expose a small MCP tool surface.
 The exact names may be improved during implementation, but the conceptual capabilities should remain approximately:
 
 * initialize project from scope
+* record the accepted base scope
+* append an accepted scope addendum in order
+* read the effective scope (base plus ordered addenda)
 * inspect project status
 * establish/update generated goals
 * get/select the current or next goal
@@ -444,11 +452,12 @@ The project is complete when:
 6. Important decisions and validation state survive restart.
 7. The model can checkpoint before context compaction, and ordinary turn boundaries checkpoint automatically through Harness hooks.
 8. A subsequent/fresh context can inspect state and resume work automatically, without the user restating previous progress.
-9. The model can evaluate scope coverage before completion.
-10. The MCP server does not contain unnecessary planning or orchestration intelligence.
-11. Automated tests pass.
-12. README documents the complete minimal workflow.
-13. A small end-to-end demonstration proves: SCOPE → generated goals → execution progress → checkpoint → resume → scope coverage → completion
+9. The accepted base scope and its ordered addenda are persisted, and a cold start reconstructs the effective scope and reconciles goals without the user re-supplying either document.
+10. The model can evaluate scope coverage before completion.
+11. The MCP server does not contain unnecessary planning or orchestration intelligence.
+12. Automated tests pass.
+13. README documents the complete minimal workflow.
+14. A small end-to-end demonstration proves: SCOPE → generated goals → execution progress → checkpoint → resume → scope coverage → completion
 
 ## 21. Initial Execution Instruction
 

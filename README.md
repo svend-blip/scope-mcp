@@ -28,7 +28,7 @@ This is not native 1M-token attention. It is safe forgetting plus reliable resum
 
 ```
 Workspace
-├── SCOPE.md              accepted scope, project contract (source of truth for intent)
+├── SCOPE.md              accepted scope, project contract (source of truth for intent; mirrored durably by record_scope)
 ├── hooks.json            Harness hook config: checkpoint on Stop, resume brief on SessionStart
 ├── src/, tests, docs     repository work (source of truth for implementation)
 └── .scope-mcp/state.db   scope-mcp state (SQLite, one small file)
@@ -173,6 +173,9 @@ No permission prompts between ordinary goals. The agent interrupts the user only
 | Tool | Purpose |
 | --- | --- |
 | `init_project` | Record objective + scope file; idempotent; returns the current working position |
+| `record_scope` | Persist the accepted base scope as durable intent |
+| `add_scope_addendum` | Append one accepted addendum after the base, in order |
+| `get_effective_scope` | Base + active addenda in order, with acceptance timestamps |
 | `status` | Human-readable resume surface: goal, progress, validation, coverage, blockers, decisions, last checkpoint |
 | `set_goals` | Establish/update the generated goal list (known statuses preserved, completed goals kept) |
 | `next_goal` | Read the current goal, optionally select one by id |
@@ -184,10 +187,31 @@ No permission prompts between ordinary goals. The agent interrupts the user only
 | `coverage` | Map SCOPE.md requirements to fulfilled / deferred / missing |
 | `complete_project` | Complete only when goals are done and coverage has no gaps; otherwise reports what is left (`force: true` overrides) |
 
+## Durable scope: base plus ordered addenda
+
+Accepted intent is stored inside scope-mcp (table `scope_docs`), so a restart never needs the scope pasted again:
+
+| Column | Meaning |
+| --- | --- |
+| `seq` | acceptance order — base first, then its addenda |
+| `kind` | `base` or `addendum` |
+| `at` | acceptance timestamp |
+| `title` | optional short label |
+| `text` | the accepted scope text |
+| `active` | `1` for the current chain; superseded records are kept, not deleted |
+
+* `record_scope` stores the accepted base scope. Recording a later base supersedes the previous chain: old rows stay for history, marked inactive.
+* `add_scope_addendum` appends one accepted addendum after the base, in recorded order. An addendum needs a base to attach to.
+* `get_effective_scope` returns the base plus its active addenda in order, each labelled `[#seq] kind accepted <timestamp> - title`. That is the document to reconcile goals and coverage against.
+* `status` prints an `effective scope:` summary line plus the ordered list, and the injected resume brief carries the same line, so a fresh context knows the effective scope must be considered before continuing.
+* `init_project` with `reset: true` clears tracked work but keeps accepted scope documents — intent outlives a reset.
+
+Interpretation stays with the model. scope-mcp only persists ordered scope documents and hands back the effective view; reconciling base against addenda, keeping already completed valid work, and adding or adjusting goals where the effective scope requires it is the agent's job.
+
 ## State, checkpoint, resume
 
 ```
-WORK → turn boundary → checkpoint written → compaction/reset → brief injected → WORK
+WORK → turn boundary → checkpoint written → compaction/reset → brief injected → effective scope read → goals reconciled → WORK
 ```
 
 * `checkpoint` writes one row containing the current goal, work completed, important decisions, validation state, unresolved issues, and the next action. Anything you omit is filled from stored state, so `checkpoint {"next_action": "..."}` is usually enough. Keep it short — summaries, not transcripts. Harness hooks call the same path automatically (see [Automatic checkpoint and resume](#automatic-checkpoint-and-resume)).
@@ -215,9 +239,10 @@ Completing every goal is not completion. Before declaring done, the agent record
 ## Testing and demo
 
 ```bash
-npm test     # 24 tests: init, goal create/update/progression, checkpoints, reload-after-restart,
+npm test     # 30 tests: init, goal create/update/progression, checkpoints, reload-after-restart,
              # decisions, blockers, coverage, completion guardrails, MCP round-trips,
-             # hook-driven checkpoint and fresh-context resume
+             # hook-driven checkpoint and fresh-context resume,
+             # cold-start restore of base scope + addenda and goal reconciliation
 npm run demo # SCOPE → goals → progress → checkpoint → resume (new process) → coverage → completion
 ```
 

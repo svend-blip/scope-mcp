@@ -32,14 +32,17 @@ test('server exposes a small tool surface over stdio', async () => {
   assert.deepEqual(
     tools.map((t) => t.name).sort(),
     [
+      'add_scope_addendum',
       'checkpoint',
       'complete_goal',
       'complete_project',
       'coverage',
+      'get_effective_scope',
       'init_project',
       'next_goal',
       'record_blocker',
       'record_decision',
+      'record_scope',
       'resolve_blocker',
       'set_goals',
       'status'
@@ -130,4 +133,30 @@ test('tool errors surface as MCP errors', async () => {
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /unknown goal id: nope/);
   await client.close();
+});
+
+test('scope documents survive across separate MCP sessions', async () => {
+  const dbPath = dbInTmp();
+  const first = await connect(dbPath);
+  try {
+    await call(first, 'init_project', { objective: 'x' });
+    assert.match(await call(first, 'record_scope', { text: 'Ship the CLI first.', title: 'base' }), /base scope #1 accepted/);
+    assert.match(
+      await call(first, 'add_scope_addendum', { text: 'Add a --json flag.', title: 'output' }),
+      /addendum #2 accepted/
+    );
+  } finally {
+    await first.close();
+  }
+
+  const second = await connect(dbPath);
+  try {
+    const scope = await call(second, 'get_effective_scope');
+    assert.match(scope, /\[#1\] base accepted .* - base\nShip the CLI first/);
+    assert.match(scope, /\[#2\] addendum accepted .* - output\nAdd a --json flag/);
+    assert.match(scope, /1 addendum\(s\) after the base/);
+    assert.match(await call(second, 'status'), /effective scope: 1 addendum\(s\) after the base scope/);
+  } finally {
+    await second.close();
+  }
 });

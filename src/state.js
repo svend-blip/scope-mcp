@@ -57,7 +57,14 @@ export class ProjectState {
              requirement TEXT PRIMARY KEY, status TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
              at TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS checkpoints (
-             seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, payload TEXT NOT NULL);`
+             seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, payload TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS scope_docs (
+             seq INTEGER PRIMARY KEY AUTOINCREMENT,
+             kind TEXT NOT NULL CHECK (kind IN ('base','addendum')),
+             at TEXT NOT NULL,
+             title TEXT NOT NULL DEFAULT '',
+             text TEXT NOT NULL,
+             active INTEGER NOT NULL DEFAULT 1);`
     );
   }
 
@@ -91,6 +98,66 @@ export class ProjectState {
     if (!this.meta('initialized_at')) this.setMeta('initialized_at', now());
     this.setMeta('scope_status', 'accepted');
     return this.statusText();
+  }
+
+  // ---- scope documents --------------------------------------------------
+
+  /** Active scope documents in accepted order: the base first, then addenda. */
+  scopeDocs() {
+    return this.db.prepare('SELECT * FROM scope_docs WHERE active = 1 ORDER BY seq').all();
+  }
+
+  baseScope() {
+    return this.db.prepare("SELECT * FROM scope_docs WHERE active = 1 AND kind = 'base' ORDER BY seq DESC LIMIT 1").get() ?? null;
+  }
+
+  /** Record the accepted base scope. A later base supersedes earlier records. */
+  recordScope({ text, title = '' } = {}) {
+    if (!text) throw new Error('record_scope needs the accepted base scope text');
+    this.db.prepare('UPDATE scope_docs SET active = 0 WHERE active = 1').run();
+    this.db
+      .prepare("INSERT INTO scope_docs (kind, at, title, text) VALUES ('base', ?, ?, ?)")
+      .run(now(), String(title), String(text));
+    return this.db.prepare('SELECT * FROM scope_docs ORDER BY seq DESC LIMIT 1').get();
+  }
+
+  /** Append one accepted addendum below the current base scope, in order. */
+  addScopeAddendum({ text, title = '' } = {}) {
+    if (!text) throw new Error('add_scope_addendum needs the accepted addendum text');
+    if (!this.baseScope()) throw new Error('add_scope_addendum needs a base scope first: call record_scope');
+    this.db
+      .prepare("INSERT INTO scope_docs (kind, at, title, text) VALUES ('addendum', ?, ?, ?)")
+      .run(now(), String(title), String(text));
+    return this.db.prepare('SELECT * FROM scope_docs ORDER BY seq DESC LIMIT 1').get();
+  }
+
+  /**
+   * The effective scope: base scope followed by its accepted addenda in order.
+   * Interpretation and reconciliation of conflicts stay with the model.
+   */
+  effectiveScope() {
+    const base = this.baseScope();
+    if (!base) return null;
+    const addenda = this.db
+      .prepare("SELECT * FROM scope_docs WHERE active = 1 AND kind = 'addendum' AND seq > ? ORDER BY seq")
+      .all(base.seq);
+    const blocks = [{ doc: base, label: 'base' }, ...addenda.map((doc) => ({ doc, label: 'addendum' }))];
+    const text = blocks
+      .map(({ doc, label }) => `[#${doc.seq}] ${label} accepted ${doc.at}${doc.title ? ` - ${doc.title}` : ''}\n${doc.text}`)
+      .join('\n\n');
+    return { base, addenda, text };
+  }
+
+  /** One-line summary of the durable intent, for status and resume briefs. */
+  scopeSummary() {
+    const scope = this.effectiveScope();
+    if (!scope) {
+      const file = this.meta('scope_file');
+      return file ? `not recorded here - read ${file}` : 'none recorded';
+    }
+    const latest = scope.addenda.at(-1) ?? scope.base;
+    return `${scope.addenda.length} addendum(s) after the base scope, latest #${latest.seq} accepted ${latest.at}`
+      + `${latest.title ? ` (${latest.title})` : ''} - read the effective scope before continuing`;
   }
 
   // ---- goals ------------------------------------------------------------
@@ -245,7 +312,8 @@ export class ProjectState {
       any('SELECT 1 FROM goals LIMIT 1') ||
         any('SELECT 1 FROM decisions LIMIT 1') ||
         any("SELECT 1 FROM blockers WHERE resolved_at = '' LIMIT 1") ||
-        any('SELECT 1 FROM coverage LIMIT 1')
+        any('SELECT 1 FROM coverage LIMIT 1') ||
+        any('SELECT 1 FROM scope_docs WHERE active = 1 LIMIT 1')
     );
   }
 
@@ -355,9 +423,10 @@ export class ProjectState {
     const lines = [];
     const objective = this.meta('objective');
     if (objective) lines.push(`objective: ${truncate(objective, 160)}`);
+    if (this.baseScope()) lines.push(`effective scope: ${this.scopeSummary()}`);
     lines.push(`current goal: ${active ? `${active.id}: ${active.title}` : this.goalRows().length ? '(none active)' : '(none)'}`);
     const next = cp?.payload.next_action || this.derivedNextAction();
-    lines.push(`next action: ${next || '(unset - read SCOPE.md and call status)'}`);
+    lines.push(`next action: ${next || '(unset - read the effective scope, then call status)'}`);
     const done = this.validations();
     lines.push(`completed: ${done.length ? done.map((v) => `${v.id} (${v.validation})`).join(', ') : '(nothing yet)'}`);
     const blockers = this.openBlockers();
@@ -379,6 +448,7 @@ export class ProjectState {
 
     lines.push(`objective: ${this.meta('objective') ?? '(none)'}`);
     lines.push(`scope: ${this.meta('scope_file') ?? 'SCOPE.md'} | status: ${this.meta('scope_status') ?? 'not initialized'}`);
+    lines.push(`effective scope: ${this.scopeSummary()}`);
     lines.push(`goals: ${counts.completed}/${goals.length} completed | pending ${counts.pending} | blocked ${counts.blocked}`);
     lines.push(`current goal: ${active ? `${active.id}: ${active.title}` : goals.length ? '(none active)' : '(none)'}`);
     lines.push(`validation: ${this.validationState()}`);
@@ -402,6 +472,13 @@ export class ProjectState {
     lines.push('decisions:');
     if (!decided.length) lines.push('  (none)');
     for (const d of decided) lines.push(`  ${d.text}`);
+
+    const docs = this.scopeDocs();
+    if (docs.length) {
+      lines.push('');
+      lines.push('accepted scope documents, in order:');
+      for (const doc of docs) lines.push(`  #${doc.seq} ${doc.kind} accepted ${doc.at}${doc.title ? ` - ${doc.title}` : ''}`);
+    }
 
     const cp = this.lastCheckpoint();
     lines.push('');
