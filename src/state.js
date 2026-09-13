@@ -6,7 +6,8 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 export const GOAL_STATUSES = ['pending', 'active', 'completed', 'blocked'];
 export const COVERAGE_STATUSES = ['fulfilled', 'deferred', 'missing'];
@@ -14,11 +15,19 @@ export const COVERAGE_STATUSES = ['fulfilled', 'deferred', 'missing'];
 /** How many checkpoint rows to keep; older ones carry nothing a resume needs. */
 export const CHECKPOINT_KEEP = 50;
 
-/** Where the state file lives for this workspace. */
+/** Expand a leading `~` the way Harness does, using the platform home. */
+export function expandHomePath(value) {
+  const text = String(value);
+  if (text === '~') return homedir();
+  if (text.startsWith('~/') || text.startsWith('~\\')) return join(homedir(), text.slice(2));
+  return text;
+}
+
+/** Where the state file lives for this workspace: one file per workspace. */
 export function defaultDbPath(cwd = process.cwd()) {
   const fromEnv = process.env.SCOPE_MCP_DB;
-  if (fromEnv) return fromEnv;
-  return `${cwd}/.scope-mcp/state.db`;
+  if (fromEnv) return expandHomePath(fromEnv);
+  return join(expandHomePath(cwd), '.scope-mcp', 'state.db');
 }
 
 function now() {

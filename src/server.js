@@ -14,6 +14,7 @@ const HELP = `scope-mcp - local MCP server holding durable scope-driven project 
 Usage:
   scope-mcp                       run the MCP server on stdio
   scope-mcp --status              print current project status and exit
+  scope-mcp doctor                print read-only runtime/environment diagnostics
   scope-mcp hook <event>          run one Harness hook and exit:
                                   stop | session-start | prompt-submit
                                   stdin: the Harness hook payload (optional)
@@ -28,6 +29,12 @@ const argv = process.argv.slice(2);
 
 if (argv.includes('--help') || argv.includes('-h')) {
   process.stdout.write(HELP);
+  process.exit(0);
+}
+
+if (argv.includes('doctor') || argv.includes('--doctor')) {
+  const { doctorReport } = await import('./doctor.js');
+  process.stdout.write(`${doctorReport()}\n`);
   process.exit(0);
 }
 

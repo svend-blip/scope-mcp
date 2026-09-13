@@ -27,68 +27,108 @@ This is not native 1M-token attention. It is safe forgetting plus reliable resum
 ## Architecture
 
 ```
-Workspace
+Repository (any location)
 ├── SCOPE.md              accepted scope, project contract (source of truth for intent; mirrored durably by record_scope)
 ├── hooks.json            Harness hook config: checkpoint on Stop, resume brief on SessionStart
-├── skills/               two global Harness skills: save-checkpoint, resume-work
+├── skills/               two Harness skills: save-checkpoint, resume-work
 ├── src/, tests, docs     repository work (source of truth for implementation)
-└── .scope-mcp/state.db   scope-mcp state (SQLite, one small file)
+└── ...
+
+Each project workspace        → <workspace>/.scope-mcp/state.db   (one small SQLite file per project)
 
 DeepSeek Harness  → runtime, session, lifecycle hooks, skills, context compaction
 Model             → understanding the scope, goals, planning, coding, validation
 scope-mcp         → durable state + simple guardrails (stdio MCP server + hook commands)
 ```
 
-Five parts:
+Six parts:
 
 | File | Role |
 | --- | --- |
-| `src/state.js` | SQLite schema, deterministic state transitions, human-readable status rendering |
+| `src/state.js` | SQLite schema, deterministic state transitions, human-readable status rendering, workspace state-path resolution |
 | `src/tools.js` | MCP tool adapters: parse args, call state, return text |
-| `src/hooks.js` | Harness hook handlers: automatic checkpoint on `Stop`, resume brief on `SessionStart` |
-| `src/server.js` | Entry point: stdio transport, plus `--status` / `hook <event>` / `--db` / `--help` CLI |
-| `skills/*/SKILL.md` | Two global Harness skills: `save-checkpoint`, `resume-work` (canonical source) |
+| `src/hooks.js` | Harness hook handlers: automatic checkpoint on `Stop`, resume brief on `SessionStart`, once-per-session fallback on `UserPromptSubmit` |
+| `src/doctor.js` | Read-only runtime diagnostics: runtime capability, resolved paths, discovered Harness roots and profiles |
+| `src/server.js` | Entry point: stdio transport, plus `--status` / `doctor` / `hook <event>` / `--db` / `--help` CLI |
+| `skills/*/SKILL.md` | Two Harness skills: `save-checkpoint`, `resume-work` (canonical source) |
 
 Dependencies: `@modelcontextprotocol/sdk` (framing) and `zod` (its required peer). Storage uses Node's built-in `node:sqlite` — no DB server, no daemon. Transport is stdio: no HTTP service, no ports, no auth.
 
+Platform rules the code follows: paths are built with `node:path` and `node:os` (`join`, `resolve`, `homedir`), never by string concatenation; the state file always follows the active workspace (`process.cwd()`, or `$SCOPE_MCP_DB`), never the repository location; the running Node binary (`process.execPath`) is the runtime. Harness itself resolves its home the same way (`$DSH_HOME`, else `<home>/.dsh`, with `~` and `~\` expansion), so scope-mcp matches that behaviour instead of hard-coding one layout.
+
+## Capability-based support levels
+
+Behaviour is chosen from what the installed Harness actually offers, not from a platform name. Inspect with `node src/server.js doctor` plus one Harness session.
+
+| Level | Requires | What you get |
+| --- | --- | --- |
+| **A — Full integration** | stdio MCP + skills + lifecycle hooks with context injection | automatic checkpoint at turn boundaries, automatic resume brief in a fresh context, both skills, all tools |
+| **B — Functional integration** | stdio MCP + skills, no usable lifecycle hooks | everything except automation: `Save checkpoint` / `Resume work` skills drive the same durable state |
+| **C — MCP-only integration** | stdio MCP only, no discoverable skill root | the tools work; the agent must be told in its instructions to call `checkpoint` before stopping and `status` when it opens |
+| Unsupported | no local MCP and no equivalent supported tool interface | nothing to attach to |
+
+Level B and C are supported installations, not failures: the state model and every tool are identical, only the automatic injection is missing. Missing hooks degrade to explicit `checkpoint` / `status` calls — no polling, no watcher, no daemon, no external context monitor.
+
+## Compatibility matrix
+
+Only rows with evidence are marked; each row states what was actually done.
+
+| Harness environment | MCP | Skills | Auto checkpoint | Auto resume | Level | Validation |
+| --- | --- | --- | --- | --- | --- | --- |
+| Web profile, Harness 0.1.5-rc.1 | Yes | Yes | Yes | Yes | A | Tested: tools listed in a live session, `Stop` wrote a checkpoint, repeat run reported `checkpoint unchanged`, `SessionStart` returned the decoded brief, both skills discovered and loaded |
+| Headless profile (`dsh --profile headless`), Harness 0.1.5-rc.1 | Yes | Yes | Yes | Yes | A | Tested: headless session used the MCP tools end to end in its own workspace, wrote a `Stop` checkpoint row and a `resume_brief_for` marker, and listed `save-checkpoint` / `resume-work` in its skill catalog |
+| Desktop application (Electron-managed profile) | Yes (same client plugin) | Yes (same loader) | Expected | Expected | A (expected) | Inspected: the CLI hands the `desktop` profile to the Electron application, which manages its own profile directory; same profile/patch and plugin mechanism, same plugin packages available. Not executed here — no Electron application present, so not marked Tested |
+| Other profiles created under `$DSH_HOME/profiles` | depends on mounted rows | depends on mounted rows | depends | depends | detected per profile | Inspected: profile discovery is directory-based; run `doctor` and one session to classify |
+
+The headless profile ships without an MCP client row, so Level A there needs the same two patch entries as Web (below). Where a profile lacks skills or hooks, the same installation converges to Level B/C without extra work.
+
 ## AI-assisted installation
 
-Recommended: let an AI agent install the whole package — server, hooks, two global skills — into an existing DeepSeek Harness installation.
+Recommended: let an AI agent install the whole package — server, hooks, skills — into an existing DeepSeek Harness installation. The repository can live anywhere; nothing depends on a particular home directory or shell.
 
-1. Clone this repository.
-2. Open it with an AI agent that has access to the existing DeepSeek Harness installation.
-3. Tell the agent to follow the AI Installation Instruction below.
-4. Let it detect the local Harness configuration, merge the integration, and validate it.
+1. Clone or copy this repository to any location.
+2. Open it with an AI agent that has access to the existing Harness installation.
+3. Tell the agent to follow the AI Installation Instruction below. Optionally name the target profile(s): *"Install scope-mcp for Desktop."* or *"Install scope-mcp for Web and headless."*
+4. Let it detect capabilities, merge only what is missing, and validate.
 
 Say this to the agent:
 
 ```text
-Follow the AI Installation Instruction in README.md and install scope-mcp, its hooks, and its two global skills into this DeepSeek Harness installation. Preserve my existing configuration and validate the installation.
+Follow the AI Installation Instruction in README.md and install scope-mcp, its hooks, and its two skills into this DeepSeek Harness installation. Detect capabilities first, install only what the target profile needs, preserve my existing configuration, and report the support level you reached.
 ```
 
 ## Installation
 
-Requires Node.js >= 22.5 (for built-in `node:sqlite`). Linux-first.
+Requires a Node runtime with built-in `node:sqlite` (Node >= 22.5). Any installation mechanism is fine (nvm, distribution package, vendor runtime).
 
 ```bash
-cd /path/to/scope-mcp
-npm install            # if ~/.npm is read-only: npm_config_cache=./.npm-cache npm install
+cd <path/to/scope-mcp>
+npm install            # read-only npm cache: npm_config_cache=./.npm-cache npm install
 npm test               # state + MCP round-trip tests
 npm run demo           # end-to-end walkthrough of the whole lifecycle
+node src/server.js doctor
 ```
 
-Remove it again by deleting `.scope-mcp/` in the workspace and the npm package — there is no daemon, no global state, nothing to migrate.
+Checks before wiring anything in:
+
+```bash
+node -e "import('node:sqlite').then(m=>console.log(m.DatabaseSync? 'sqlite ok':'no sqlite'))"
+node src/server.js doctor
+node src/server.js --status
+```
+
+`doctor` is read-only apart from ensuring its own state directory. It reports the version, Node runtime and `node:sqlite` availability, repository path, active workspace, resolved state path and write capability, discovered Harness home and profiles, discovered skill roots, and the Harness environment variables it can see. It never edits Harness configuration.
 
 ## Connect it to DeepSeek Harness
 
 Register it as a stdio MCP server for the session. Harness requires an absolute `command` path:
 
-```json
+```jsonc
 {
   "mcpServers": [
     {
       "name": "scope-mcp",
-      "command": "/usr/bin/node",
+      "command": "/absolute/path/to/a/node-with-node-sqlite",
       "args": ["/absolute/path/to/scope-mcp/src/server.js"],
       "env": [{ "name": "SCOPE_MCP_DB", "value": "/absolute/path/to/project/.scope-mcp/state.db" }]
     }
@@ -96,19 +136,13 @@ Register it as a stdio MCP server for the session. Harness requires an absolute 
 }
 ```
 
-Harness accepts two MCP transports: omit `type` for stdio (shown above), or `{ "type": "http", "url": "..." }` for Streamable HTTP. `command` must be an absolute path, and `env` / `headers` are ordered `{ "name", "value" }` entries rather than plain maps.
+Harness accepts two MCP transports: omit `type` for stdio (shown above), or `{ "type": "http", "url": "..." }` for Streamable HTTP. Stay on stdio unless the target genuinely lacks it — an HTTP server would only add a listening process for no benefit. `command` must be an absolute path, and `env` / `headers` are ordered `{ "name", "value" }` entries rather than plain maps.
 
-`SCOPE_MCP_DB` is optional; without it the state file is `<cwd>/.scope-mcp/state.db`, which is what you want when the agent runs in the project workspace.
-
-Check that the server answers:
-
-```bash
-node src/server.js --status     # prints current state (or "not initialized") and exits
-```
+`SCOPE_MCP_DB` is optional. Without it the state file is `<cwd>/.scope-mcp/state.db`, which is what you want when the agent runs in the project workspace; a leading `~` expands against the platform home. Setting it explicitly is for one fixed shared workspace.
 
 Note for programmatic clients: call tools with the object form `callTool({ name, arguments })`. Some SDK client builds treat the two-positional-argument shorthand inconsistently.
 
-Both are the same server: the block above registers it for one session, and [Harness configuration required](#harness-configuration-required) shows the profile-level YAML that mounts it permanently together with the hook row that makes checkpointing automatic.
+Both blocks are the same server: the JSON above registers it for one session, and [Harness configuration required](#harness-configuration-required) shows the profile-level YAML that mounts it permanently together with the hook row that makes checkpointing automatic.
 
 ## Automatic checkpoint and resume
 
@@ -120,9 +154,11 @@ Both directions work without anyone asking for them.
 
 Explicit calls still win: `checkpoint { "next_action": "..." }` records a precise instruction that automatic checkpoints keep while the same goal is active, then fall back to the active goal once work moves on.
 
+The mapping — `Stop` → checkpoint, `SessionStart` → resume brief, `UserPromptSubmit` → once-per-session fallback — is the proven one. Where another Harness build names its equivalent events differently, point the same three commands at those events; the handlers do not care about the names.
+
 ### Harness configuration required
 
-Both the MCP server row and the hooks row live in the profile's patch layer, `$DSH_HOME/profiles/<profile>/cordis.patch.yml` (`$DSH_HOME` is usually `~/.dsh`):
+Both rows live in the patch layer of the profile that is actually used, `$DSH_HOME/profiles/<profile>/cordis.patch.yml`:
 
 ```yaml
 - insert:
@@ -131,18 +167,23 @@ Both the MCP server row and the hooks row live in the profile's patch layer, `$D
       config:
         serverName: scope-mcp
         transport: stdio
-        command: /absolute/path/to/node
+        command: /absolute/path/to/node-with-node-sqlite
         args: [/absolute/path/to/scope-mcp/src/server.js]
-        cwd: /absolute/path/to/project
+        env: {}
     - id: hooks-scope-mcp
       name: '@deepseek-ai/dsh-hooks-claude-code'
       config:
         configPath: /absolute/path/to/scope-mcp/hooks.json
+        pluginRoot: /absolute/path/to/scope-mcp
 ```
 
-`patchReload: live` (the shipped `web` profile) picks the patch up without a restart; other profiles need a new session. If the bridge package is missing from the profile: `dsh plugin --profile web add @deepseek-ai/dsh-hooks-claude-code`.
+Use the repository's real absolute path in all three places; `${CLAUDE_PLUGIN_ROOT}` in `hooks.json` resolves from `pluginRoot`, so the same file works wherever the repository is cloned. Moving the repository afterwards means updating these paths (or re-running installation) — say so rather than hiding it.
 
-Hook commands run with cwd set to the session workspace and `CLAUDE_PROJECT_DIR` exported, so state lands in `<workspace>/.scope-mcp/state.db` unless `SCOPE_MCP_DB` says otherwise. Keep the paths in `hooks.json` absolute (or use `${CLAUDE_PROJECT_DIR}`): hooks do not inherit an interactive shell's aliases. Verify without opening a session:
+Omit `cwd` to let each session keep its launch directory as its workspace. Set `cwd` only when this profile always serves one project. Different profiles are patched independently; a profile you do not use needs no change.
+
+`patchReload: live` picks patches up without a restart; other profiles need a new session. If a plugin package is missing from that profile: `dsh plugin --profile <profile> add '@deepseek-ai/dsh-hooks-claude-code'`.
+
+Hook commands run with cwd set to the session workspace and `CLAUDE_PROJECT_DIR` exported, so state lands in `<workspace>/.scope-mcp/state.db` unless `SCOPE_MCP_DB` says otherwise. Keep the paths absolute; hooks run non-interactively and do not inherit shell aliases. Verify without opening a session:
 
 ```bash
 node src/server.js hook stop           # writes the checkpoint, prints one line
@@ -152,78 +193,65 @@ node src/server.js --status            # full working position
 
 ### Limitations in this Harness version (0.1.5-rc.1)
 
-* The hooks bridge supports `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStart`, `SubagentStop`. There is **no dedicated pre-compaction event**: automatic compaction runs inside the agent loop (context pressure at the step boundary, plus context-overflow recovery) and fires no hook event of its own. Checkpointing at every turn boundary covers it — durable state is at most one turn old when compaction runs — and `/compact` keeps its own summary next to it.
+* There is **no dedicated pre-compaction event**: automatic compaction runs inside the agent loop (context pressure at the step boundary, plus context-overflow recovery) and fires no hook event of its own. Checkpointing at every turn boundary covers it — durable state is at most one turn old when compaction runs — and `/compact` keeps its own summary next to it. If a later version exposes a real pre-compaction event, point the checkpoint command at it and keep this mapping as the fallback.
 * Only `SessionStart`, `UserPromptSubmit` and `PostToolUse` surface a hook's `additionalContext`; a `Stop` hook contributes state through its side effect only. Top-level `systemMessage` and `updatedInput` are ignored by the bridge today.
 * Compaction itself stays entirely inside Harness. `scope-mcp` never stores conversation history: the SQLite file holds goals, validation, decisions, blockers, checkpoints and coverage.
-* The shipped `web` / `headless` profiles do not mount the hooks bridge, so its row has to be added once per profile. Without it, everything still works through explicit tool calls — `checkpoint` before a session ends, `status` after a fresh context opens.
+* Neither shipped profile mounts the hooks bridge by default, so its row is added once per profile in use. Without it, everything still works through explicit tool calls — Level B.
 * Harness keeps one MCP server process per running session. After updating this repository, restart the session (or the MCP connection) so the server reloads; otherwise the running session talks to the previous build and may not see newly added tools. Skills and hook commands are re-read per run, so they pick up changes immediately.
-* Skill names must be lowercase with hyphens (`^[a-z0-9]+(?:-[a-z0-9]+)*$`). Names such as `Strict_Review` or `Pre-Cloud` are ignored by the loader, so keep the directory name and the frontmatter `name` in that form. Global roots are `$DSH_HOME/skills` and the agents home (`~/.agents/skills`, or `$DSH_AGENTS_HOME`); the project-local roots `<workspace>/.dsh/skills` and `<workspace>/.agents/skills` are only visible in that project.
+* Skill names must be lowercase with hyphens (`^[a-z0-9]+(?:-[a-z0-9]+)*$`); other names are skipped by the loader. Roots are scanned in this order: `<projectRoot>/.dsh/skills`, `<projectRoot>/.agents/skills`, configured extra directories, `$DSH_HOME/skills`, `<agents home>/skills`, each with an optional `skills/` layer. Linked skill directories are followed. `doctor` lists which of these exist right now.
 
 ## AI Installation Instruction
 
-Read and execute this section in order. It installs the complete package into a running DeepSeek Harness installation, merges rather than replaces, and validates each stage. Paths and package versions below are examples: detect the real values first and use what the installed version actually supports.
+Read and execute this section in order. It installs the complete package into a running DeepSeek Harness installation, merges rather than replaces, and validates each stage. Paths and versions are examples: detect real values first and use what the installed version supports. Work with filesystem inspection, Node, and the Harness CLI — the steps are shell-agnostic (bash, zsh, and PowerShell all provide the same primitives), so do not assume one shell.
 
-### 1. Detect the environment
+### 1. Detect capabilities, not machine names
 
 ```bash
-uname -s -m                       # operating system
-node -v; command -v node          # which runtime the harness will actually use
-echo "$DSH_HOME"                  # harness home; falls back to ~/.dsh
-ls "$DSH_HOME/profiles"           # available profiles
-cat "$DSH_HOME/settings.yaml"     # default model/provider rows to preserve
-cat "$DSH_HOME/profiles/<profile>/package.json"   # bundles + dsh version in use
+node src/server.js doctor        # one report: runtime, paths, harness home, profiles, skill roots
 ```
 
-Notes:
+Then confirm what Harness itself exposes:
 
-- Prefer the profile the user actually launches (`dsh --profile <name>`, or the `web` alias). Do not edit other profiles.
-- Read the harness version from the installed `@deepseek-ai/dsh` package.json rather than assuming a schema version.
-- `scope-mcp` needs `node:sqlite`, so verify the runtime instead of trusting `/usr/bin/node`:
+```bash
+echo "$DSH_HOME"                                  # harness home; falls back to the default under the user home
+ls "$DSH_HOME/profiles"                           # available profiles
+cat "$DSH_HOME/settings.yaml"                     # default model/provider rows to preserve
+cat "$DSH_HOME/profiles/<profile>/package.json"    # bundles + harness version in use
+dsh --profile <profile> --dump-config              # composed plugin rows for that profile
+```
 
-  ```bash
-  node -e "import('node:sqlite').then(m=>console.log(m.DatabaseSync? 'sqlite ok':'no sqlite'))"
-  ```
+Record, for the profile(s) in use: harness version (from the installed `@deepseek-ai/dsh` package.json), whether the MCP client plugin and hooks bridge are mounted (`--dump-config` / existing patch rows), which skill roots exist and are actually scanned (check `doctor`, then confirm in a session), and how the profile names its session-start and turn-boundary events. Do not infer one profile's contents from another, and do not assume a distribution is weaker or stronger than it is.
 
-  If that fails, find a Node >= 22.5 runtime (for example the nvm current version) and record its absolute path. Use that absolute path in every command written into Harness configuration — hooks run non-interactively and may not load shell start-up files.
-- Discover the current skill mechanism before writing anything: check `$DSH_HOME/skills`, `~/.agents/skills`, `DSH_AGENTS_HOME`, and existing skills already visible in a session. Use whichever root the installed version actually scans, and match the format of skills that already work there (`<dir>/SKILL.md` with YAML frontmatter `name` and `description`; names must be lowercase with hyphens).
+Choose the target profiles deliberately: use what the user named, otherwise the profile the current session runs in. Profiles that are not in use stay untouched.
 
-### 2. Install dependencies and check the repository
+### 2. Pick a Node runtime
+
+`node` in an interactive shell is not necessarily the runtime a hook or service manager will use. List candidates (`process.execPath` of the current session, the distribution's node, any version-manager current), then verify each candidate:
+
+```bash
+<AbsolutePathToNode> -e "import('node:sqlite').then(m=>console.log(m.DatabaseSync? 'sqlite ok':'no sqlite'))"
+```
+
+Take the first candidate that prints `sqlite ok` and resolve it to an absolute path. Use exactly that path in every Harness configuration entry. Do not require nvm and do not prefer `/usr/bin/node`: on this class of machine the distribution node can be older than the `node:sqlite` floor while the active session runs a newer runtime.
+
+### 3. Install dependencies and check the repository
 
 ```bash
 cd <path/to/scope-mcp>
 npm install          # read-only npm cache: npm_config_cache=./.npm-cache npm install
-npm test             # must pass before wiring anything into Harness
+npm test
 npm run demo
 ```
 
-Keep dependencies as they are: `@modelcontextprotocol/sdk` plus `zod`, storage through built-in `node:sqlite`. No daemon, scheduler, or service.
+Keep dependencies as they are: `@modelcontextprotocol/sdk` plus `zod`, storage through built-in `node:sqlite`. No daemon, scheduler, polling, or service.
 
-### 3. MCP client integration
+### 4. Merge the MCP row (idempotent)
 
-Check whether the active profile already mounts the native MCP client:
-
-```bash
-grep -n "dsh-mcp-client" "$DSH_HOME/profiles/<profile>/cordis.patch.yml"
-```
-
-If the row is missing, add the client package at the version matching the installed harness, and let the profile manifest record it:
+Read the target profile's existing patch file first. If it already contains an `mcp-scope-mcp` row, update that row in place rather than appending another. Otherwise back up the file and append one entry, leaving every existing entry intact:
 
 ```bash
-dsh plugin --profile <profile> add '@deepseek-ai/dsh-mcp-client@<same version as @deepseek-ai/dsh>'
+# from the profile directory: copy cordis.patch.yml to cordis.patch.yml.bak-<timestamp>
 ```
-
-Upgrade Harness itself only when the client cannot be resolved otherwise, and say why.
-
-### 4. MCP configuration
-
-Back up first, then merge the server row into the profile patch:
-
-```bash
-cd "$DSH_HOME/profiles/<profile>"
-cp cordis.patch.yml cordis.patch.yml.bak-$(date +%Y%m%d-%H%M%S)
-```
-
-Append one patch entry. Keep every existing entry untouched — existing MCP servers, plugins, models, and credentials stay as they are:
 
 ```yaml
 - insert:
@@ -233,19 +261,17 @@ Append one patch entry. Keep every existing entry untouched — existing MCP ser
         serverName: scope-mcp
         transport: stdio
         command: /absolute/path/to/a/node-that-supports-node-sqlite
-        args:
-          - /absolute/path/to/scope-mcp/src/server.js
-        cwd: /absolute/path/to/any-project-workspace
+        args: [/absolute/path/to/scope-mcp/src/server.js]
         env: {}
         toolCallTimeoutMs: 60000
         failOnStartupError: true
 ```
 
-`cwd` sets the workspace for sessions started from this profile; each workspace keeps its own `.scope-mcp/state.db`. If the installed version exposes MCP servers through a different structure (for example an ACP `mcpServers` block with ordered `env` entries), use that structure with the same values instead.
+If the installed version exposes MCP servers through a different structure (for example an ACP `mcpServers` block with ordered `env` entries), use that structure with the same values instead. Add the client package only when it is missing: `dsh plugin --profile <profile> add '@deepseek-ai/dsh-mcp-client@<installed harness version>'`.
 
-### 5. Hooks
+### 5. Merge the hooks row (skip where hooks are unavailable)
 
-The hooks bridge turns turn boundaries into automatic checkpoints and fresh-session resume injection. Merge a second entry into the same patch file:
+Same file, same idempotent rule — update `hooks-scope-mcp` if present, else append:
 
 ```yaml
 - insert:
@@ -256,51 +282,53 @@ The hooks bridge turns turn boundaries into automatic checkpoints and fresh-sess
         pluginRoot: /absolute/path/to/scope-mcp
 ```
 
-`hooks.json` uses `${CLAUDE_PLUGIN_ROOT}` so it works wherever the repository is cloned; `pluginRoot` supplies that value. If the installed harness already ships a hook bridge or a different hook format, reuse it with the same three commands (`hook session-start`, `hook prompt-submit`, `hook stop`) rather than adding a second mechanism. No polling, no watcher process.
+`pluginRoot` supplies `${CLAUDE_PLUGIN_ROOT}` used inside `hooks.json`, which is how the package path stays independent of the active workspace. Where the profile already ships a hook mechanism, reuse it with the same three commands (`hook session-start`, `hook prompt-submit`, `hook stop`) instead of adding a second one. Where the profile has no hook mechanism at all, stop here: the installation is still supported at Level B.
 
-### 6. Global skills
+### 6. Install the two skills
 
-Install both repository skills so every workspace can use them. Symlinks keep the repository canonical and let updates propagate; copy if the platform handles links poorly:
+Discover the scanned skill roots (`doctor` lists the ones that exist; confirm against skills already visible in a session). Match the format already working there — `<dir>/SKILL.md` with frontmatter `name` and `description`, lowercase-hyphen names. Then install both repository skills into one root that is actually scanned, preferring in order: Harness's own reference/link mechanism if it has one, a symlink or junction, and finally a copied directory.
 
-```bash
-mkdir -p "$HOME/.agents/skills"                       # or "$DSH_HOME/skills", whichever this install scans
-ln -sfn /absolute/path/to/scope-mcp/skills/save-checkpoint "$HOME/.agents/skills/save-checkpoint"
-ln -sfn /absolute/path/to/scope-mcp/skills/resume-work     "$HOME/.agents/skills/resume-work"
-```
+* Symlinked roots keep the repository canonical, and edits apply on the next read.
+* Copied directories need a re-copy after every skill change — say which one was used.
+* Keep project state out of global roots: state stays in `<workspace>/.scope-mcp/state.db`.
 
-Do not copy project state into a global location: `<workspace>/.scope-mcp/state.db` stays per-project. Verify discovery with a new session (`/save-checkpoint`, `/resume-work`, or the skill listing).
+Names must stay `save-checkpoint` and `resume-work`.
 
 ### 7. Validate
 
 ```bash
+node src/server.js doctor
 node src/server.js --help
 echo '{"hook_event_name":"Stop"}' | node src/server.js hook stop
 echo '{"hook_event_name":"SessionStart","session_id":"v1"}' | node src/server.js hook session-start
 ```
 
-Then, inside Harness:
+Then, inside Harness in the target profile:
 
 - the session lists the scope-mcp tools (`init_project`, `status`, `set_goals`, `next_goal`, `complete_goal`, `record_decision`, `record_blocker`, `resolve_blocker`, `checkpoint`, `coverage`, `complete_project`, plus `record_scope`, `add_scope_addendum`, `get_effective_scope`);
 - `status` answers and shows the effective-scope line;
 - ending a turn writes one checkpoint, and ending it again without changes does not add a second row;
 - a fresh session receives the resume brief with current goal and next action;
+- both skills appear in the skill catalog and load;
 - two different workspaces create two different `.scope-mcp/state.db` files.
 
-End-to-end, in a throwaway directory:
+Where a capability is absent, verify the level it degrades to instead: without hooks, `checkpoint` + `status` must still round-trip across sessions; without skills, the same calls must work from the agent's own instructions.
 
-```bash
-mkdir -p /tmp/scope-check && cd /tmp/scope-check
-```
-
-Start a session there, give it a three-line scope, let it record scope + goals + partial progress, say **"Save checkpoint"**, close the session, open a new one, say **"Resume work"**, and confirm the agent names the correct goal, validation evidence, and next action without being told anything. Then delete only that temporary directory.
+End-to-end, in a throwaway directory: start a session there, give it a three-line scope, let it record scope + goals + partial progress, say **"Save checkpoint"**, close the session, open a new one, say **"Resume work"**, and confirm the agent names the correct goal, validation evidence, and next action without being told anything. Then delete only that temporary directory.
 
 ### 8. Report
 
-Report concisely: harness version, `$DSH_HOME`, profile modified, Node executable used, repository path, MCP row installed, hooks row installed, both skill paths, MCP/hook/skill validation results, the end-to-end resume result, and remaining compatibility limitations.
+Report concisely: harness version, harness home, profiles modified, Node executable used, repository path, MCP/hook rows installed, skill root and install method, validation results per capability, the support level reached, the end-to-end resume result, and remaining limitations. Re-running installation should converge: report what was already present instead of duplicating it.
 
-### Rollback
+### Uninstall
 
-Restore the timestamped backup of `cordis.patch.yml`, remove the two skill symlinks, and delete `<workspace>/.scope-mcp/` per project. Nothing else in the harness is touched.
+Remove only scope-mcp's own parts:
+
+1. Delete the `mcp-scope-mcp` and `hooks-scope-mcp` entries from the patched profile(s), or restore the timestamped backup of that patch file.
+2. Remove the two skill entries (`save-checkpoint`, `resume-work`) from the skill root they were installed in.
+3. Leave everything else alone: other profiles, unrelated plugins, credentials, unrelated skills, Harness session storage.
+
+Project state is deliberately not removed by uninstall: `<workspace>/.scope-mcp/state.db` is durable project data, deleted only when the user asks for it per project.
 
 ## Normal usage
 
@@ -310,11 +338,11 @@ Open DeepSeek Harness in the project workspace and provide the scope (paste it, 
 
 ### Save work manually
 
-Say **"Save checkpoint"**. The global `save-checkpoint` skill reads current state, records what changed, and stores the exact next action.
+Say **"Save checkpoint"**. The `save-checkpoint` skill reads current state, records what changed, and stores the exact next action.
 
 ### Resume later
 
-After a restart, compaction, or a new session, say **"Resume work"**. The global `resume-work` skill reconstructs goals, progress, validation, blockers, decisions and the next action, reconciles them against the repository, and continues. Automatic hooks keep doing the same thing in the background of every turn, with no extra prompting.
+After a restart, compaction, or a new session, say **"Resume work"**. The `resume-work` skill reconstructs goals, progress, validation, blockers, decisions and the next action, reconciles them against the repository, and continues. Automatic hooks keep doing the same thing in the background of every turn, with no extra prompting.
 
 ## Start a new scope-driven project
 
@@ -401,6 +429,7 @@ With the hooks row configured, a fresh context already holds the goal and next a
 From inside a session: the `status` tool. From a shell:
 
 ```bash
+node src/server.js doctor      # runtime, paths, discovered roots
 node src/server.js --status
 node src/server.js --db /other/project/.scope-mcp/state.db --status
 sqlite3 .scope-mcp/state.db 'select id,status,title from goals;'
@@ -415,11 +444,13 @@ Completing every goal is not completion. Before declaring done, the agent record
 ## Testing and demo
 
 ```bash
-npm test     # 36 tests: init, goal create/update/progression, checkpoints, reload-after-restart,
+npm test     # 46 tests: init, goal create/update/progression, checkpoints, reload-after-restart,
              # decisions, blockers, coverage, completion guardrails, MCP round-trips,
              # hook-driven checkpoint and fresh-context resume,
              # cold-start restore of base scope + addenda and goal reconciliation,
-             # skill metadata, workspace state isolation, package/hook/README consistency
+             # skill metadata, workspace state isolation (including paths with spaces),
+             # portable path/state resolution, doctor diagnostics,
+             # package/hook/README consistency
 npm run demo # SCOPE → goals → progress → checkpoint → resume (new process) → coverage → completion
 ```
 

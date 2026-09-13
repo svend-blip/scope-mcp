@@ -275,6 +275,23 @@ Both halves should normally happen without the user asking.
 
 `scope-mcp` stays responsible for durable project/work state only: it does not duplicate Harness session persistence, does not add multi-agent behaviour, and does not manage contexts itself.
 
+### Capability-based integration
+
+Integration level is chosen from what the installed Harness version and profile actually provide, not from platform or profile names:
+
+* Level A: local MCP + skills + lifecycle hooks with context injection — automatic checkpoint and automatic resume.
+* Level B: local MCP + skills, no usable lifecycle hooks — the same durable state driven by explicit `checkpoint` / `status` calls. Still a supported installation.
+* Level C: local MCP only — the tools work, and the agent's own instructions must call `checkpoint` before stopping and `status` when a context opens.
+* Unsupported only where there is no local MCP and no equivalent supported tool interface.
+
+Rules that go with it:
+
+* Differences between profiles and operating systems stay in installation and configuration. The state layer stays platform-neutral and does not learn about specific profiles.
+* Skills install through whatever skill mechanism the installed version actually scans; the repository stays canonical, copying being a documented fallback.
+* Missing lifecycle hooks degrade to manual skills plus MCP tools. Do not compensate with polling, screen scraping, UI automation, a daemon, or an external context monitor.
+* Without a real pre-compaction event the guarantee stays what it is: checkpoint at the latest supported turn/lifecycle boundary.
+* Support claims distinguish Tested from Inspected and Expected.
+
 ## 10. Virtual Long-Running Context
 
 The system should make it practical for a model with a finite context window, such as 256K, to complete projects requiring substantially more total work across multiple context windows.
@@ -345,6 +362,8 @@ If stdio provides the simplest reliable solution, prefer stdio.
 
 Do not introduce HTTP services, authentication, networking, containers, or deployment infrastructure unless actually necessary.
 
+Keep stdio as the default transport on every Harness profile and operating system. Another transport is added only when a target environment genuinely lacks stdio, and then as a thin adapter over the same state layer.
+
 ## 15. Security and Workspace Boundaries
 
 The MCP server must operate only on its intended project state.
@@ -356,6 +375,8 @@ DeepSeek Harness already has workspace/file tools.
 `scope-mcp` should not become another filesystem abstraction.
 
 Avoid arbitrary command execution inside the MCP server.
+
+State stays workspace-local: `<workspace>/.scope-mcp/state.db`, overridable by `SCOPE_MCP_DB`, resolved with platform path APIs from the active workspace. The location of the scope-mcp package itself is a separate concept and never decides where state is written, so one installed package serves any number of projects and the repository may live anywhere. Paths are built with platform-aware APIs, not string concatenation, and no path is hard-coded for one machine.
 
 ## 16. Observability
 
@@ -375,6 +396,8 @@ Human-readable status output is desirable.
 
 Do not build a monitoring platform.
 
+One read-only diagnostic command may report the runtime facts an integrating agent needs: version, Node runtime and `node:sqlite` availability, package location, active workspace, resolved state path and writability, discovered Harness home / profiles / skill roots, and the Harness variables in view. It must not mutate configuration and must not become an installer framework.
+
 ## 17. Testing
 
 Provide automated tests for the important state transitions and MCP behaviour.
@@ -393,8 +416,12 @@ At minimum test:
 * automatic checkpoint through the chosen Harness integration mechanism
 * resume in a fresh context from persisted state alone, including the next action
 * ordinary short sessions producing no unnecessary checkpoints
+* workspace state isolation across several workspaces, including workspace paths containing spaces
+* portable path and state resolution: workspace-derived state file, override variable, leading-`~` expansion, package location not leaking into state paths
+* the read-only diagnostic helper reporting runtime capability and resolved paths without rewriting configuration
+* hook commands and skills resolving through Harness-provided substitution rather than one machine path
 
-Keep tests proportional to the simplicity of the project.
+Keep tests proportional to the simplicity of the project. Platform coverage comes from platform-aware APIs and real filesystem checks, not from string constants standing in for another operating system.
 
 ## 18. Documentation
 
@@ -409,6 +436,9 @@ Provide a concise README explaining:
 * how state/checkpoint/resume works
 * how automatic checkpointing works and what triggers it
 * how automatic resume works, and which Harness configuration it needs
+* how integration level is detected from installed capabilities, with an evidence-based compatibility matrix that separates Tested, Inspected and Expected
+* how to install for a chosen profile or set of profiles, how repeated installation converges instead of duplicating entries, and how to uninstall
+* how to verify the runtime and inspect the environment before wiring anything in
 * limitations of the current DeepSeek Harness version
 * how to inspect current state
 
@@ -432,7 +462,7 @@ Prefer:
 * simple MCP tools
 * easy debugging
 * easy removal/reinstallation
-* Linux-first operation
+* platform-neutral operation wherever the installed Harness provides the needed capability
 
 Avoid speculative extensibility.
 
@@ -458,6 +488,9 @@ The project is complete when:
 12. Automated tests pass.
 13. README documents the complete minimal workflow.
 14. A small end-to-end demonstration proves: SCOPE → generated goals → execution progress → checkpoint → resume → scope coverage → completion
+15. No core path or instruction depends on one machine layout: repository location, Node executable, Harness home, profile name and skill root are all detected rather than assumed.
+16. Integration level is chosen from detected capabilities, missing lifecycle hooks degrade to manual skills plus MCP tools, and every support claim states whether it was Tested or only Inspected/Expected.
+17. Installation is idempotent, targets only the profiles in use, preserves unrelated configuration, and uninstall removes the integration while keeping project state.
 
 ## 21. Initial Execution Instruction
 
