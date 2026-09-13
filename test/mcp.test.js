@@ -1,0 +1,133 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
+const SERVER = new URL('../src/server.js', import.meta.url).pathname;
+
+async function connect(dbPath) {
+  const client = new Client({ name: 'scope-mcp-test', version: '0.0.0' });
+  await client.connect(
+    new StdioClientTransport({ command: process.execPath, args: ['--no-warnings', SERVER, '--db', dbPath] })
+  );
+  return client;
+}
+
+/** Call one tool and return its text output. */
+async function call(client, name, args = {}) {
+  const result = await client.callTool({ name, arguments: args });
+  return result.content.map((part) => part.text).join('\n');
+}
+
+function dbInTmp() {
+  return join(mkdtempSync(join(tmpdir(), 'scope-mcp-mcp-')), 'state.db');
+}
+
+test('server exposes a small tool surface over stdio', async () => {
+  const client = await connect(dbInTmp());
+  const { tools } = await client.listTools();
+  assert.deepEqual(
+    tools.map((t) => t.name).sort(),
+    [
+      'checkpoint',
+      'complete_goal',
+      'complete_project',
+      'coverage',
+      'init_project',
+      'next_goal',
+      'record_blocker',
+      'record_decision',
+      'resolve_blocker',
+      'set_goals',
+      'status'
+    ]
+  );
+  assert.ok(tools.every((t) => (t.description ?? '').length > 10), 'every tool explains itself');
+  await client.close();
+});
+
+test('scope -> goals -> progress -> checkpoint -> resume -> coverage -> completion', async () => {
+  const dbPath = dbInTmp();
+  const first = await connect(dbPath);
+
+  assert.match(await call(first, 'init_project', { objective: 'Ship scope-mcp', scope_file: 'SCOPE.md' }), /objective: Ship scope-mcp/);
+
+  const goals = await call(first, 'set_goals', {
+    goals: [
+      { id: 'g1', title: 'state layer' },
+      { id: 'g2', title: 'mcp tools' },
+      { id: 'g3', title: 'docs' }
+    ]
+  });
+  assert.match(goals, /\[active\] g1 - state layer/);
+  assert.match(await call(first, 'next_goal'), /current goal: g1: state layer/);
+
+  assert.match(
+    await call(first, 'complete_goal', { goal_id: 'g1', validation: 'node --test: 11 pass' }),
+    /completed: g1[\s\S]*next goal: g2: mcp tools/
+  );
+  await call(first, 'record_decision', { text: 'stdio transport, one sqlite file per workspace' });
+  await call(first, 'record_blocker', { text: 'registry needs a workspace cache dir' });
+
+  const cp = await call(first, 'checkpoint', { next_action: 'finish docs, then coverage and complete_project' });
+  assert.match(cp, /current_goal: g2: mcp tools/);
+  assert.match(cp, /next_action: finish docs, then coverage and complete_project/);
+  await first.close();
+
+  // Fresh context: a new process must resume from the same state file alone.
+  const second = await connect(dbPath);
+  const status = await call(second, 'status');
+  assert.match(status, /objective: Ship scope-mcp/);
+  assert.match(status, /goals: 1\/3 completed \| pending 1/);
+  assert.match(status, /current goal: g2: mcp tools/);
+  assert.match(status, /node --test: 11 pass/);
+  assert.match(status, /stdio transport, one sqlite file per workspace/);
+  assert.match(status, /finish docs, then coverage and complete_project/);
+  assert.match(status, /registry needs a workspace cache dir/);
+
+  await call(second, 'complete_goal', { goal_id: 'g2', validation: 'client round-trip passes' });
+  await call(second, 'complete_goal', { goal_id: 'g3', validation: 'README covers the workflow' });
+  await call(second, 'resolve_blocker', { seq: 1 });
+
+  const notYet = await call(second, 'complete_project');
+  assert.match(notYet, /not complete yet/);
+  assert.match(notYet, /no scope coverage recorded yet/);
+
+  const covered = await call(second, 'coverage', {
+    items: [
+      { requirement: 'resume across contexts', status: 'fulfilled', note: 'status + checkpoint' },
+      { requirement: 'http transport', status: 'deferred', note: 'stdio is enough' }
+    ]
+  });
+  assert.match(covered, /1 fulfilled, 1 deferred, 0 missing/);
+
+  const done = await call(second, 'complete_project');
+  assert.match(done, /project complete/);
+  assert.match(done, /deferred: http transport/);
+  assert.match(await call(second, 'status'), /status: complete/);
+  await second.close();
+});
+
+test('blockers can stop a specific goal and unblock on selection', async () => {
+  const client = await connect(dbInTmp());
+  await call(client, 'init_project', { objective: 'x' });
+  await call(client, 'set_goals', { goals: [{ id: 'g1', title: 'only' }] });
+  assert.match(await call(client, 'record_blocker', { text: 'registry offline', goal_id: 'g1' }), /goal g1 blocked/);
+  assert.match(await call(client, 'status'), /\[blocked\] g1 - only/);
+  assert.match(await call(client, 'next_goal', { goal_id: 'g1' }), /current goal: g1: only/);
+  assert.match(await call(client, 'status'), /\[active\] g1 - only/);
+  await client.close();
+});
+
+test('tool errors surface as MCP errors', async () => {
+  const client = await connect(dbInTmp());
+  await call(client, 'init_project', { objective: 'x' });
+  await call(client, 'set_goals', { goals: [{ id: 'g1', title: 'only' }] });
+  const result = await client.callTool({ name: 'complete_goal', arguments: { goal_id: 'nope', validation: 'proof' } });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /unknown goal id: nope/);
+  await client.close();
+});
