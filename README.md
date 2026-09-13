@@ -92,10 +92,51 @@ Validation column uses four labels: **Tested** (executed here, with the observed
 | --- | --- | --- | --- | --- | --- | --- |
 | Web profile, Harness 0.1.5-rc.1 | Yes | Yes | Yes | Yes | A | Tested: tools listed in a live session, `Stop` wrote a checkpoint, repeat run reported `checkpoint unchanged`, `SessionStart` returned the decoded brief, both skills discovered and loaded |
 | Headless profile (`dsh --profile headless`), Harness 0.1.5-rc.1 | Yes | Yes | Yes | Yes | A | Tested: headless session used the MCP tools end to end in its own workspace, wrote a `Stop` checkpoint row and a `resume_brief_for` marker, and listed `save-checkpoint` / `resume-work` in its skill catalog |
+| Windows Web profile, Harness 0.1.5-rc.1 | Yes | Yes | Yes | Yes | A | Tested: native Windows validation; built-in tools and MCP passed, `SessionStart` injected the resume brief, `PostToolUse` markers fired, `Stop` wrote/deduplicated checkpoints, and fresh-session resume restored the correct goal and next action. Level A currently requires the documented Windows deployment-policy workaround for session-less hooks. |
 | Desktop application (Electron-managed profile) | Yes (same client plugin) | Yes (same loader) | Expected | Expected | A (expected) | Inspected: the CLI hands the `desktop` profile to the Electron application, which manages its own profile directory; same profile/patch and plugin mechanism, same plugin packages available. Not executed here — no Electron application present, so not marked Tested |
 | Other profiles created under `$DSH_HOME/profiles` | depends on mounted rows | depends on mounted rows | depends | depends | detected per profile | Inspected: profile discovery is directory-based; run `doctor` and one session to classify |
 
 The headless profile ships without an MCP client row, so Level A there needs the same two patch entries as Web (below). Where a profile lacks skills or hooks, the same installation converges to Level B/C without extra work.
+
+## Native Windows validation
+
+The following behavior has been demonstrated successfully on native Windows:
+
+* DeepSeek Harness Web starts successfully.
+* Built-in Harness tools execute normally.
+* scope-mcp MCP tools execute normally.
+* scope-mcp state is isolated per project workspace.
+* `SessionStart` automatically injects the scope-mcp resume brief.
+* The resume brief restores:
+  * objective
+  * current goal
+  * progress
+  * validation state
+  * decisions
+  * unresolved issues
+  * exact next action
+* MCP `status` agrees with the injected resume state.
+* `PostToolUse` hooks execute successfully.
+* `Stop` hooks execute successfully.
+* changed state produces a durable checkpoint.
+* unchanged state is deduplicated/idempotently skipped.
+* a fresh Harness session can resume work without depending on previous conversation history.
+* Windows-native filesystem paths work correctly.
+* paths containing drive letters are handled correctly.
+* no `C:\C:\...` path duplication remains.
+* `node:sqlite` works with the validated Node runtime.
+
+Reference environment:
+
+```text
+Windows 10 Pro 64-bit
+Node.js v24.19.0
+npm/npx 11.17.0
+DeepSeek Harness 0.1.5-rc.1
+Harness Web profile
+```
+
+These versions describe the validated environment. They are not hard version pins: the repository's own requirement remains Node.js >= 22.5 (for built-in `node:sqlite`), and newer Harness versions are expected to keep working — see the Windows sandbox note below for the one version-specific caveat.
 
 ## Installation
 
@@ -250,6 +291,47 @@ Install `save-checkpoint` and `resume-work` from the repository's `skills/` dire
 
 Then continue with [Quick start after installation](#quick-start-after-installation) — the same first-use flow regardless of which method was used.
 
+### Windows PowerShell example
+
+```powershell
+# 1. install and verify
+Set-Location <scope-mcp-dir>
+npm install
+npm test
+npm run demo
+
+# 2. register the MCP server and hooks in the active profile's cordis.patch.yml
+#    (see "Connect it to DeepSeek Harness"); discover the node executable with:
+(Get-Command node).Source
+
+# 3. install the two skills into the harness skills root
+$dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME '.dsh' }
+$skillsRoot = Join-Path $dshHome 'skills'
+New-Item -ItemType Directory -Force -Path $skillsRoot | Out-Null
+Copy-Item -Recurse -Force skills\save-checkpoint, skills\resume-work $skillsRoot
+
+# 4. generate hooks.json from discovered paths (do not copy another machine's file)
+$node = (Get-Command node).Source
+$hook = (Resolve-Path scripts\scope-hooks.js).Path
+@"
+{
+  "hooks": {
+    "SessionStart": [ { "matcher": "", "hooks": [ { "type": "command", "command": "& '$node' --no-warnings '$hook' resume" } ] } ],
+    "Stop": [ { "matcher": "", "hooks": [ { "type": "command", "command": "& '$node' --no-warnings '$hook' checkpoint" } ] } ],
+    "PostToolUse": [ { "matcher": "", "hooks": [ { "type": "command", "command": "& '$node' --no-warnings '$hook' marker" } ] } ]
+  }
+}
+"@ | Set-Content -Encoding utf8 scripts\hooks.json
+
+# 5. on Harness 0.1.5-rc.1 Web, for Level A hooks: merge the sandbox-policy
+#    override into the active profile's cordis.patch.yml (see "Windows: required
+#    workaround for Level A hooks") — with explicit user approval first.
+
+# 6. verify
+node src\server.js --status
+node src\server.js --doctor
+```
+
 ## Connect it to DeepSeek Harness
 
 Register it as a stdio MCP server for the session. Harness requires an absolute `command` path:
@@ -330,6 +412,87 @@ node src/server.js --status            # full working position
 * Neither shipped profile mounts the hooks bridge by default, so its row is added once per profile in use. Without it, everything still works through explicit tool calls — Level B.
 * Harness keeps one MCP server process per running session. After updating this repository, restart the session (or the MCP connection) so the server reloads; otherwise the running session talks to the previous build and may not see newly added tools. Skills and hook commands are re-read per run, so they pick up changes immediately.
 * Skill names must be lowercase with hyphens (`^[a-z0-9]+(?:-[a-z0-9]+)*$`); other names are skipped by the loader. Roots are scanned in this order: `<projectRoot>/.dsh/skills`, `<projectRoot>/.agents/skills`, configured extra directories, `$DSH_HOME/skills`, `<agents home>/skills`, each with an optional `skills/` layer. Linked skill directories are followed. `doctor` lists which of these exist right now.
+
+## Windows: hook sandbox limitation (Harness 0.1.5-rc.1)
+
+On the tested DeepSeek Harness 0.1.5-rc.1 Windows Web configuration, scope-mcp hook commands execute as session-less direct shell calls under the Harness deployment sandbox policy. With the default sandboxed Windows PowerShell executor, the Windows ACL runner can confine those hook child processes to the Harness server launch workspace. If the active project is another workspace, the hook can therefore fail to open or write `<workspace>/.scope-mcp/state.db`, producing `unable to open database file`.
+
+The MCP server itself is not the problem.
+
+Per-session Harness tool execution is not the problem.
+
+The issue is specifically the deployment policy inherited by session-less hook shell calls.
+
+Symptom pattern: MCP tools work and read/write the workspace state normally, while automatic hooks fail. The Stop hook reports `scope-mcp hook: Error: unable to open database file` (the hook exits 0 by design, so the failure is visible only in hook logs/stderr records — check them, do not assume success because the session continued).
+
+## Windows: required workaround for Level A hooks
+
+For the currently validated Harness version (0.1.5-rc.1), Level A Windows hook automation requires the deployment sandbox policy used by session-less hook calls to allow full filesystem access:
+
+```yaml
+- id: sandbox-policy
+  config:
+    mode: danger-full-access
+```
+
+Apply this as an id-targeted override in the active profile's `cordis.patch.yml`. A workspace-write root instead is *not* sufficient on Windows: the ACL runner requires the platform temp directory to be outside the workspace root, so a root broad enough to cover several sibling project workspaces is rejected.
+
+Never blindly overwrite an existing Harness configuration. Merge the setting using the same safe profile-patching procedure as every other change:
+
+1. inspect the effective Harness/profile configuration;
+2. preserve unrelated settings;
+3. create a backup where the current installer already uses backups;
+4. modify only what is required;
+5. validate the resulting profile before declaring installation successful.
+
+Do not hard-code machine specifics anywhere in configuration or documentation: no fixed usernames, no fixed node executable paths, no fixed checkout directories, no fixed profile names. Use runtime discovery.
+
+Per-session tool execution keeps its own session policy; this override only changes the deployment policy that session-less calls (like the hook child processes) inherit.
+
+## Security warning: `danger-full-access`
+
+```text
+danger-full-access
+```
+
+reduces sandbox isolation for the deployment context to which it applies. It is **not harmless**; it is a deliberate trade-off. scope-mcp currently needs it on the validated Windows setup because:
+
+* the Harness invokes these hooks outside the normal project session sandbox,
+* scope-mcp must write durable state into the active project's `.scope-mcp` directory,
+* the tested Windows ACL sandbox prevents that when the project is outside the Harness server launch workspace.
+
+This is a **Harness 0.1.5-rc.1 integration limitation**, not a fundamental scope-mcp architectural requirement. If a future Harness version provides a safe mechanism for session-less hooks to inherit the active session workspace permissions, scope-mcp should prefer that mechanism and the `danger-full-access` workaround should become unnecessary.
+
+`danger-full-access` is not a universal requirement: it does not apply to Linux/macOS and must not be applied to future Harness versions blindly. Require explicit user approval before introducing or changing to `danger-full-access`.
+
+### Windows Level A installation validation
+
+After installation, prove behavior rather than merely verifying that files exist.
+
+For Level A, validate:
+
+1. scope-mcp MCP tools are visible.
+2. `status` can be called.
+3. a disposable project/workspace gets its own `<workspace>/.scope-mcp/state.db`.
+4. another workspace receives an independent state database.
+5. `save-checkpoint` skill is discovered.
+6. `resume-work` skill is discovered.
+7. `SessionStart` injects the resume brief.
+8. the resume brief agrees with MCP `status`.
+9. `PostToolUse` executes successfully where configured.
+10. `Stop` creates or deduplicates a checkpoint correctly.
+11. a completely fresh session can recover the active goal and exact next action without previous conversation history.
+12. no hook/database/sandbox/tool-dispatch error remains.
+
+On Windows, specifically check for:
+
+```text
+unable to open database file
+```
+
+and treat its occurrence in automatic hooks as a failed Level A installation.
+
+Do not hide hook failures merely because the hook bridge itself returns cleanly. scope-mcp hooks deliberately exit 0 on internal errors so a broken hook never blocks a session; verify the hook side effects (`hooks.log` lines, checkpoint rows, injected resume brief) instead.
 
 ## AI Installation Instruction
 
@@ -614,6 +777,22 @@ Status shows project/objective, scope status, scope-document counts and effectiv
 ## Completion
 
 Completing every goal is not completion. Before declaring done, the agent records coverage per scope requirement and calls `complete_project`, which reports unfulfilled requirements, unfinished goals, deferred items with reasons, open blockers, and the validation collected. Fix gaps, or pass `force: true` when a deferral is intentional, then complete.
+
+## Cross-platform path correctness
+
+Filesystem paths derived from file URLs must use Node-native conversion such as `fileURLToPath(...)`, never `url.pathname`, when the value is subsequently used as a native filesystem path. A URL `.pathname` is POSIX-shaped (`/C:/Users/...`) and Windows resolves it as `C:\C:\Users\...`.
+
+Filesystem paths must be composed with Node's path utilities (`path.join`, `path.resolve`) where appropriate.
+
+The following regression must remain impossible:
+
+```text
+/C:/Users/...
+        ↓
+C:\C:\Users\...
+```
+
+Regression tests cover native Windows drive-root behavior (`/^[A-Za-z]:[\\/]/`, no duplicated drive root) even when the suite executes on another OS.
 
 ## Testing and demo
 

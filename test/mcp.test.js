@@ -3,10 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-const SERVER = new URL('../src/server.js', import.meta.url).pathname;
+// Convert the file URL to a native filesystem path.
+ // URL.pathname is POSIX-shaped on Windows (for example /C:/Users/...).
+const SERVER = fileURLToPath(new URL('../src/server.js', import.meta.url));
 
 async function connect(dbPath) {
   const client = new Client({ name: 'scope-mcp-test', version: '0.0.0' });

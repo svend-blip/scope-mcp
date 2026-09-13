@@ -2,13 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { ProjectState } from '../src/state.js';
+import { isAbsolute, join } from 'node:path';
+import { ProjectState, defaultDbPath } from '../src/state.js';
 
 function freshPath() {
   const dir = mkdtempSync(join(tmpdir(), 'scope-mcp-'));
   return join(dir, 'state.db');
 }
+
+test('defaultDbPath builds a native absolute path without duplicated roots', () => {
+  const cwd = process.cwd();
+  assert.equal(defaultDbPath(cwd), join(cwd, '.scope-mcp', 'state.db'), 'db path must come from node:path');
+  assert.ok(isAbsolute(defaultDbPath()), 'workspace db path must be absolute');
+  if (process.platform === 'win32') {
+    assert.match(defaultDbPath(), /^[A-Za-z]:[\\/]/, 'a Windows db path must start with a drive root');
+    assert.doesNotMatch(
+      defaultDbPath(),
+      /^[A-Za-z]:[\\/][A-Za-z]:[\\/]/,
+      'a Windows db path must never duplicate its drive root'
+    );
+  }
+});
 
 test('project initialization records objective and scope, and is idempotent', () => {
   const path = freshPath();

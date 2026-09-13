@@ -1,0 +1,39 @@
+{
+  "_comment": "Historical fixture from the validated Windows environment (DeepSeek Harness 0.1.5-rc.1 Web). The absolute node/checkout paths below are machine-specific EXAMPLE values from that validation run - installers must regenerate this file from runtime-discovered paths (node executable, checkout directory). The hooks bridge ignores extra top-level keys.",
+  "_validated_environment": "Windows 10 Pro 64-bit, Node.js v24.19.0, DeepSeek Harness 0.1.5-rc.1 Web profile",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "& 'C:\\Program Files\\nodejs\\node.exe' --no-warnings 'C:\\Users\\svend\\scope-mcp\\scripts\\scope-hooks.js' resume"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "& 'C:\\Program Files\\nodejs\\node.exe' --no-warnings 'C:\\Users\\svend\\scope-mcp\\scripts\\scope-hooks.js' checkpoint"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "& 'C:\\Program Files\\nodejs\\node.exe' --no-warnings 'C:\\Users\\svend\\scope-mcp\\scripts\\scope-hooks.js' marker"
+          }
+        ]
+      }
+    ]
+  }
+}
