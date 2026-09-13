@@ -82,9 +82,11 @@ Behaviour is chosen from what the installed Harness actually offers, not from a 
 
 Level B and C are supported installations, not failures: the state model and every tool are identical, only the automatic injection is missing. Missing hooks degrade to explicit `checkpoint` / `status` calls — no polling, no watcher, no daemon, no external context monitor.
 
+Both installation methods aim for the highest level the target Harness environment natively supports — A where hooks exist, B where only skills and MCP exist, C where only the MCP transport exists — and report which level was reached. Nothing is emulated to climb a level: no polling, no watcher, no daemon, no UI automation.
+
 ## Compatibility matrix
 
-Only rows with evidence are marked; each row states what was actually done.
+Validation column uses four labels: **Tested** (executed here, with the observed evidence in the row), **Inspected** (mechanism read from the installed harness, not executed), **Expected** (inferred from shared mechanisms, awaiting a run), **Unsupported** (minimum capability absent). Only rows with evidence are marked; each row states what was actually done.
 
 | Harness environment | MCP | Skills | Auto checkpoint | Auto resume | Level | Validation |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -95,42 +97,158 @@ Only rows with evidence are marked; each row states what was actually done.
 
 The headless profile ships without an MCP client row, so Level A there needs the same two patch entries as Web (below). Where a profile lacks skills or hooks, the same installation converges to Level B/C without extra work.
 
-## AI-assisted installation
-
-Recommended: let an AI agent install the whole package — server, hooks, skills — into an existing DeepSeek Harness installation. The repository can live anywhere; nothing depends on a particular home directory or shell.
-
-1. Clone or copy this repository to any location.
-2. Open it with an AI agent that has access to the existing Harness installation.
-3. Tell the agent to follow the AI Installation Instruction below. Optionally name the target profile(s): *"Install scope-mcp for Desktop."* or *"Install scope-mcp for Web and headless."*
-4. Let it detect capabilities, merge only what is missing, and validate.
-
-Say this to the agent:
-
-```text
-Follow the AI Installation Instruction in README.md and install scope-mcp, its hooks, and its two skills into this DeepSeek Harness installation. Detect capabilities first, install only what the target profile needs, preserve my existing configuration, and report the support level you reached.
-```
-
 ## Installation
 
-Requires a Node runtime with built-in `node:sqlite` (Node >= 22.5). Any installation mechanism is fine (nvm, distribution package, vendor runtime).
+Two supported methods. Both end at the same place: scope-mcp running at the highest integration level the target Harness environment natively supports, with project state in `<workspace>/.scope-mcp/state.db`. Neither method assumes Linux, `/home/<user>`, `/usr/bin/node`, the `web` profile, a fixed skill root, or symlink support — those are detected.
 
-```bash
-cd <path/to/scope-mcp>
-npm install            # read-only npm cache: npm_config_cache=./.npm-cache npm install
-npm test               # state + MCP round-trip tests
-npm run demo           # end-to-end walkthrough of the whole lifecycle
-node src/server.js doctor
+1. **[AI-assisted installation](#ai-assisted-installation)** — recommended.
+2. **[Manual installation](#manual-installation)** — for configuring Harness by hand.
+
+The support level a target reaches is decided by detected capabilities, not by which product it is. See [Capability-based support levels](#capability-based-support-levels) and the [compatibility matrix](#compatibility-matrix) above for what has actually been observed.
+
+## AI-assisted installation
+
+Recommended method, and the shortest one. Let an AI agent with access to the existing DeepSeek Harness installation do the detecting, merging and validating. The repository can live anywhere; nothing depends on a particular home directory or shell.
+
+The installing agent detects, in order:
+
+* the operating system and its path rules
+* the installed DeepSeek Harness version (from the installed harness package, not assumed)
+* the profile or distribution actually in use, or the ones named by the user
+* a Node runtime that provides `node:sqlite`, resolved to an absolute path
+* MCP support in that profile (which client plugin is mounted, which transports it accepts)
+* hooks support (whether the lifecycle-hooks bridge is available and which events it emits)
+* which skill roots that installation actually scans
+* the repository's absolute path, so generated configuration points at the real location
+
+It then preserves existing configuration, merges only what is missing, installs at the highest supported level (A, then B, then C), and validates each stage. The detailed procedure is the [AI Installation Instruction](#ai-installation-instruction) below.
+
+```text
+git clone <scope-mcp repository>
+cd scope-mcp
 ```
 
-Checks before wiring anything in:
+Then open that directory with an AI agent that can reach the existing Harness installation, and say:
+
+```text
+Follow the AI Installation Instruction in README.md and install scope-mcp,
+its hooks, and its global skills into this DeepSeek Harness installation.
+Preserve my existing configuration and validate the installation.
+```
+
+Optionally name the targets: *"Install scope-mcp for Desktop."* or *"Install scope-mcp for Web and headless."* Profiles that are not named stay untouched.
+
+## Manual installation
+
+For configuring DeepSeek Harness directly. Same result, same capability checks — the difference is only who performs them. Do not assume Linux, `/usr/bin/node`, the `web` profile, `~/.agents/skills`, one fixed `$DSH_HOME`, or that symlinks work.
+
+### Step A — Verify the runtime
+
+A Node runtime with built-in `node:sqlite` is required: **Node >= 22.5**. Any installation mechanism counts (version manager, distribution package, vendor runtime). An interactive shell's `node` is not necessarily the runtime a hook or service host will use, so check the exact executable you plan to write into configuration:
 
 ```bash
+node --version
 node -e "import('node:sqlite').then(m=>console.log(m.DatabaseSync? 'sqlite ok':'no sqlite'))"
-node src/server.js doctor
-node src/server.js --status
 ```
 
-`doctor` is read-only apart from ensuring its own state directory. It reports the version, Node runtime and `node:sqlite` availability, repository path, active workspace, resolved state path and write capability, discovered Harness home and profiles, discovered skill roots, and the Harness environment variables it can see. It never edits Harness configuration.
+Print the absolute path of the runtime that passed and use that path everywhere below.
+
+### Step B — Install dependencies and check the repository
+
+From the cloned repository:
+
+```bash
+npm install            # read-only npm cache: npm_config_cache=./.npm-cache npm install
+npm test
+npm run demo
+node src/server.js doctor
+```
+
+`doctor` is read-only apart from ensuring its own state directory. It reports the version, Node runtime and `node:sqlite` availability, repository path, active workspace, resolved state path and write capability, discovered Harness home and profiles, discovered skill roots, and the Harness environment variables in view. Run it from the project workspace you intend to use, and again later from any other workspace — the state path should follow that workspace.
+
+### Step C — Detect the Harness home and profile
+
+Harness keeps its home under `$DSH_HOME`, falling back to `.dsh` in the user home, and discovers profiles as directories beneath `profiles/`:
+
+```bash
+node src/server.js doctor      # harness home, discovered profiles, skill roots
+ls "$DSH_HOME/profiles"        # or the equivalent for your shell
+```
+
+Choose the profile that is actually used — the one the session launches with, or the one the user named. Do not default to `web` just because it exists, and leave unused profiles alone. Composed rows for a profile can be inspected with:
+
+```bash
+dsh --profile <name> --dump-config
+```
+
+The profile's editable layer is `<profile>/cordis.patch.yml` inside that directory. Copy it to a timestamped backup before editing.
+
+### Step D — Make sure an MCP client is available
+
+If the selected profile already mounts the native MCP client, reuse it. Otherwise add a compatible version at the harness's own version:
+
+```bash
+dsh plugin --profile <name> add '@deepseek-ai/dsh-mcp-client@<installed harness version>'
+```
+
+### Step E — Configure the scope-mcp MCP server
+
+The shape scope-mcp needs is the same everywhere; the surrounding profile syntax belongs to Harness and may differ by version, so check what the installed version documents and accepts rather than copying a fixed wrapper:
+
+```yaml
+serverName: scope-mcp
+transport: stdio
+command: <absolute compatible Node executable>
+args:
+  - <absolute path to scope-mcp/src/server.js>
+```
+
+Omit `cwd` to let each session keep its launch directory as its workspace; set it only when the profile always serves one project. For a session-level configuration instead of a profile, see [Connect it to DeepSeek Harness](#connect-it-to-deepseek-harness).
+
+Labeled example for the tested Harness 0.1.5-rc.1 `web` and `headless` profiles, appended to that profile's `cordis.patch.yml`:
+
+```yaml
+- insert:
+    - id: mcp-scope-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: scope-mcp
+        transport: stdio
+        command: /absolute/path/to/node-with-node-sqlite
+        args: [/absolute/path/to/scope-mcp/src/server.js]
+        env: {}
+        toolCallTimeoutMs: 60000
+        failOnStartupError: true
+```
+
+### Step F — Configure hooks where supported
+
+Full Level A integration uses the repository's [`hooks.json`](hooks.json) for automatic turn-boundary checkpointing (`Stop`) and automatic fresh-session resume injection (`SessionStart`, with a once-per-session `UserPromptSubmit` fallback). Where the profile exposes the hooks bridge, mount it and point it at that file, giving it the repository path so `${CLAUDE_PLUGIN_ROOT}` resolves:
+
+```yaml
+- insert:
+    - id: hooks-scope-mcp
+      name: '@deepseek-ai/dsh-hooks-claude-code'
+      config:
+        configPath: /absolute/path/to/scope-mcp/hooks.json
+        pluginRoot: /absolute/path/to/scope-mcp
+```
+
+(Again the tested 0.1.5-rc.1 shape; confirm the bridge package name and options for the installed version.) Where no hooks mechanism is available, stop here — scope-mcp still works at Level B with manual `Save checkpoint` / `Resume work`, and nothing else changes.
+
+### Step G — Install the two global skills
+
+Install `save-checkpoint` and `resume-work` from the repository's `skills/` directory into a root that this installation actually scans (`doctor` lists the existing candidates; confirm against skills already visible in a session). The repository copies stay canonical — edits there are what matter. Prefer a native reference/link mechanism, then a symlink or junction; where none of those behave well, copy the directories and note that each change needs a re-copy. Names stay lowercase with hyphens. Keep project state out of global roots.
+
+### Step H — Validate
+
+* Harness starts with the profile in use and the session shows the scope-mcp tools.
+* `status` answers and shows the scope-document counts.
+* `Save checkpoint` and `Resume work` appear in the skill catalog.
+* Ending a turn writes one checkpoint, and ending it again without changes does not add a second row; a fresh session receives the resume brief (where hooks are supported — otherwise confirm `checkpoint` + `status` round-trip across two sessions).
+* Two different workspaces produce two different `<workspace>/.scope-mcp/state.db` files.
+
+Then continue with [Quick start after installation](#quick-start-after-installation) — the same first-use flow regardless of which method was used.
 
 ## Connect it to DeepSeek Harness
 
@@ -215,7 +333,7 @@ node src/server.js --status            # full working position
 
 ## AI Installation Instruction
 
-Read and execute this section in order. It installs the complete package into a running DeepSeek Harness installation, merges rather than replaces, and validates each stage. Paths and versions are examples: detect real values first and use what the installed version supports. Work with filesystem inspection, Node, and the Harness CLI — the steps are shell-agnostic (bash, zsh, and PowerShell all provide the same primitives), so do not assume one shell.
+Read and execute this section in order. It is the detailed guide behind [AI-assisted installation](#ai-assisted-installation); the same stages appear there in short form for anyone configuring Harness by hand. It installs the complete package into a running DeepSeek Harness installation, merges rather than replaces, and validates each stage. Paths and versions are examples: detect real values first and use what the installed version supports. Work with filesystem inspection, Node, and the Harness CLI — the steps are shell-agnostic (bash, zsh, and PowerShell all provide the same primitives), so do not assume one shell.
 
 ### 1. Detect capabilities, not machine names
 
@@ -345,6 +463,28 @@ Remove only scope-mcp's own parts:
 Project state is deliberately not removed by uninstall: `<workspace>/.scope-mcp/state.db` is durable project data, deleted only when the user asks for it per project.
 
 ## Normal usage
+
+### Quick start after installation
+
+Identical after either installation method.
+
+```text
+Open DeepSeek Harness in the project workspace.
+Paste the project scope.
+Answer only necessary clarification questions.
+Let Harness continue autonomously.
+```
+
+```text
+Save checkpoint     # pause with the working position stored
+Resume work         # a later or fresh context picks it up
+```
+
+Project state stays local to the workspace, one file per project:
+
+```text
+<workspace>/.scope-mcp/state.db
+```
 
 ### Start a project
 
