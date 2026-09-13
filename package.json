@@ -9,6 +9,7 @@
   "files": [
     "src",
     "hooks.json",
+    "skills",
     "README.md",
     "SCOPE.md"
   ],

@@ -151,8 +151,11 @@ test('shipped hook config wires the three events to this server', () => {
     for (const group of groups) {
       for (const hook of group.hooks) {
         assert.equal(hook.type, 'command');
-        assert.match(hook.command, /src\/server\.js hook (stop|session-start|prompt-submit)/);
-        assert.ok(hook.command.startsWith('/') || hook.command.includes('${CLAUDE_PROJECT_DIR}'), 'absolute or substituted path');
+        assert.match(hook.command, /src\/server\.js"? hook (stop|session-start|prompt-submit)/);
+        assert.ok(
+          hook.command.includes('${CLAUDE_PLUGIN_ROOT}') || hook.command.startsWith('/'),
+          'path comes from the harness plugin-root substitution or an absolute path'
+        );
       }
     }
   }
