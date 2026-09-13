@@ -24,6 +24,19 @@ A model with a finite context window (say 256K) still has to finish projects tha
 
 This is not native 1M-token attention. It is safe forgetting plus reliable resume: minimal state, low context overhead, low operational complexity.
 
+## Two kinds of durable state
+
+```text
+PROJECT INTENT                      PROJECT EXECUTION
+
+base scope                          goals + progress
++ accepted addenda, in order        decisions + blockers
+= effective scope                   validation + checkpoints
+                                    coverage + completion
+```
+
+Intent says what the project must satisfy. Execution says where the work currently is. Both live in one small SQLite file per workspace, so a completely fresh context recovers both without anyone re-pasting anything: `get_effective_scope` for intent, `status` for progress. Checkpoints stay in the execution column — they summarize the working position and do not copy scope text into it.
+
 ## Architecture
 
 ```
@@ -306,15 +319,16 @@ echo '{"hook_event_name":"SessionStart","session_id":"v1"}' | node src/server.js
 Then, inside Harness in the target profile:
 
 - the session lists the scope-mcp tools (`init_project`, `status`, `set_goals`, `next_goal`, `complete_goal`, `record_decision`, `record_blocker`, `resolve_blocker`, `checkpoint`, `coverage`, `complete_project`, plus `record_scope`, `add_scope_addendum`, `get_effective_scope`);
-- `status` answers and shows the effective-scope line;
+- `status` answers and shows the scope-document counts and the effective-scope line;
+- durable scope works end to end in a disposable directory: `record_scope` a short base, `add_scope_addendum` one addition, start a second process, and confirm `get_effective_scope` returns both in order without anything being re-supplied;
 - ending a turn writes one checkpoint, and ending it again without changes does not add a second row;
-- a fresh session receives the resume brief with current goal and next action;
+- a fresh session receives the resume brief with current goal and next action, and the brief points at `get_effective_scope`;
 - both skills appear in the skill catalog and load;
 - two different workspaces create two different `.scope-mcp/state.db` files.
 
 Where a capability is absent, verify the level it degrades to instead: without hooks, `checkpoint` + `status` must still round-trip across sessions; without skills, the same calls must work from the agent's own instructions.
 
-End-to-end, in a throwaway directory: start a session there, give it a three-line scope, let it record scope + goals + partial progress, say **"Save checkpoint"**, close the session, open a new one, say **"Resume work"**, and confirm the agent names the correct goal, validation evidence, and next action without being told anything. Then delete only that temporary directory.
+End-to-end, in a throwaway directory: start a session there, give it a three-line scope, let it record scope + goals + partial progress, say **"Save checkpoint"**, close the session, open a new one, say **"Resume work"**, and confirm the agent names the correct goal, validation evidence, and next action without being told anything. Then add a one-line addendum in that second session and confirm the agent reads the effective scope, keeps the completed work, and continues with the new requirement. Delete only that temporary directory when done.
 
 ### 8. Report
 
@@ -334,15 +348,19 @@ Project state is deliberately not removed by uninstall: `<workspace>/.scope-mcp/
 
 ### Start a project
 
-Open DeepSeek Harness in the project workspace and provide the scope (paste it, or keep it in `SCOPE.md`). The agent then works the loop: scope → clarification only if needed → goals → autonomous work → validation → checkpoints → coverage → completion. Say *"Here is the scope. Ask anything essential, then build it."*
+Paste the scope (or keep it in `SCOPE.md`) and say *"Here is the scope. Ask anything essential, then build it."* The agent clarifies only what is genuinely unclear, persists the accepted text with `record_scope`, derives goals, and works them autonomously. The pasted text does not need to be provided again — it is durable intent from that point on.
 
-### Save work manually
+### Extend a project later
 
-Say **"Save checkpoint"**. The `save-checkpoint` skill reads current state, records what changed, and stores the exact next action.
+Hand over the new text as a scope addendum. The agent stores it with `add_scope_addendum`, reads the effective scope, keeps the goals that still apply, adds what the new requirement needs, and continues. A project that was already complete is reopened for re-evaluation by that same act.
 
-### Resume later
+### Pause
 
-After a restart, compaction, or a new session, say **"Resume work"**. The `resume-work` skill reconstructs goals, progress, validation, blockers, decisions and the next action, reconciles them against the repository, and continues. Automatic hooks keep doing the same thing in the background of every turn, with no extra prompting.
+Say **"Save checkpoint"**. The `save-checkpoint` skill records what changed and the exact next action. Scope documents are not copied into checkpoints.
+
+### Cold resume
+
+Say **"Resume work"** after a restart, compaction, or a new session. The `resume-work` skill reads the effective scope first, then the execution state, checks the repository, reconciles, and continues from the recorded next action — no re-explaining. With hooks configured, the small resume brief already arrives with the new context: current goal, progress, blockers, next action, plus a pointer to fetch the effective scope. Automatic hooks keep checkpointing at every turn boundary in the background.
 
 ## Start a new scope-driven project
 
@@ -353,14 +371,16 @@ After a restart, compaction, or a new session, say **"Resume work"**. The `resum
 The agent then loops autonomously:
 
 ```
-read SCOPE.md → status → next_goal → work → validate → complete_goal
-              → record_decision / record_blocker → continue
+read effective scope → status → next_goal → work → validate → complete_goal
+                     → record_decision / record_blocker → continue
+                     → coverage → complete_project
 ```
 
 Typical calls:
 
 ```jsonc
 init_project   { "objective": "Build scope-mcp: durable scope-driven project state.", "scope_file": "SCOPE.md" }
+record_scope   { "text": "...accepted scope...", "title": "base" }
 set_goals      { "goals": [{ "id": "g1", "title": "SQLite state layer" }, { "id": "g2", "title": "tests + README" }] }
 next_goal      {}                                        // -> "current goal: g1: SQLite state layer"
 complete_goal  { "goal_id": "g1", "validation": "npm test: 15 pass" }
@@ -379,7 +399,7 @@ No permission prompts between ordinary goals. The agent interrupts the user only
 | `init_project` | Record objective + scope file; idempotent; returns the current working position |
 | `record_scope` | Persist the accepted base scope as durable intent |
 | `add_scope_addendum` | Append one accepted addendum after the base, in order |
-| `get_effective_scope` | Base + active addenda in order, with acceptance timestamps |
+| `get_effective_scope` | Base + active addenda in order, with acceptance timestamps; `include_text: false` returns the document index only |
 | `status` | Human-readable resume surface: goal, progress, validation, coverage, blockers, decisions, last checkpoint |
 | `set_goals` | Establish/update the generated goal list (known statuses preserved, completed goals kept) |
 | `next_goal` | Read the current goal, optionally select one by id |
@@ -406,9 +426,23 @@ Accepted intent is stored inside scope-mcp (table `scope_docs`), so a restart ne
 
 * `record_scope` stores the accepted base scope. Recording a later base supersedes the previous chain: old rows stay for history, marked inactive.
 * `add_scope_addendum` appends one accepted addendum after the base, in recorded order. An addendum needs a base to attach to.
-* `get_effective_scope` returns the base plus its active addenda in order, each labelled `[#seq] kind accepted <timestamp> - title`. That is the document to reconcile goals and coverage against.
-* `status` prints an `effective scope:` summary line plus the ordered list, and the injected resume brief carries the same line, so a fresh context knows the effective scope must be considered before continuing.
+* `get_effective_scope` returns the base plus its active addenda in order, each labelled `[#seq] kind accepted <timestamp> - title`. That is the document to reconcile goals and coverage against. With a large scope, `include_text: false` returns just that index — sequence, kind, acceptance stamp, length — so provenance can be checked without pulling every document into context.
+* `status` prints counts (`scope documents: base recorded, addenda: N | effective revision: #M`), a one-line effective-scope summary, and the ordered list — never the whole documents. The injected resume brief carries the same summary plus a pointer to `get_effective_scope`.
 * `init_project` with `reset: true` clears tracked work but keeps accepted scope documents — intent outlives a reset.
+
+### Scope intake, addenda, and completion
+
+Text handed over as the project scope becomes the base scope (`record_scope`) when none is recorded yet; text handed over as an addition or modification becomes an ordered addendum (`add_scope_addendum`). Nothing else needs to classify text, and the classification itself is the model's judgement, not server logic.
+
+An addendum accepted after `complete_project` reopens the completion check on purpose: `scope_status` goes back to `accepted`, the stale completion stamp is cleared, completed goals and valid coverage stay exactly as they are. Then the new requirements are evaluated — add goals with `set_goals` (completed ones are preserved), record coverage for the new requirements, and call `complete_project` again. Coverage recorded before the newest scope document counts as needing a fresh look, so completion waits until coverage has been reconsidered against the current effective scope. Nothing is marked fulfilled automatically.
+
+### Relationship to SCOPE.md
+
+`SCOPE.md` in the repository stays the human-readable artifact of the contract, and the two should agree. The recorded scope documents inside `scope-mcp` are what a fresh context reads first, because they survive in one place with their order and timestamps. Updating `SCOPE.md` when accepting scope or an addendum is a normal edit by the model — there is no file watcher and no synchronization machinery.
+
+### Existing projects
+
+A database written before scope documents existed keeps working untouched: opening it adds the missing `scope_docs` table, all goals, decisions, blockers, coverage and checkpoints stay, and `status` reports that no base scope is recorded yet (`read SCOPE.md`). Recording it then is a plain `record_scope` call — import from `SCOPE.md` when it clearly holds the accepted scope, otherwise record what the user accepts now. Nothing is invented for the past.
 
 Interpretation stays with the model. scope-mcp only persists ordered scope documents and hands back the effective view; reconciling base against addenda, keeping already completed valid work, and adding or adjusting goals where the effective scope requires it is the agent's job.
 
@@ -420,22 +454,22 @@ WORK → turn boundary → checkpoint written → compaction/reset → brief inj
 
 * `checkpoint` writes one row containing the current goal, work completed, important decisions, validation state, unresolved issues, and the next action. Anything you omit is filled from stored state, so `checkpoint {"next_action": "..."}` is usually enough. Keep it short — summaries, not transcripts. Harness hooks call the same path automatically (see [Automatic checkpoint and resume](#automatic-checkpoint-and-resume)).
 * Conversation history is *not* stored here. Harness owns session persistence and compaction; the repository is memory.
-* Recovery after Harness restart, MCP server restart, compaction, or a brand-new context is the same: the resume brief arrives with the new context, then `SCOPE.md` + `status` fill in the details. The SQLite file (WAL journal, `synchronous = FULL`) survives process death between statements.
+* Recovery after Harness restart, MCP server restart, compaction, or a brand-new context is the same each time: the small resume brief arrives with the new context, then `get_effective_scope` restores intent, `status` restores the position, and the repository confirms the details. The SQLite file (WAL journal, `synchronous = FULL`) survives process death between statements.
 
-With the hooks row configured, a fresh context already holds the goal and next action; the opening move is then `status` only when more detail is needed.
+With the hooks row configured, a fresh context already holds the goal and next action; the opening move is then `status` only when more detail is needed. Large scope documents stay on disk until something actually needs them — a brief, counts, and one call to fetch the text.
 
 ## Inspect current state
 
 From inside a session: the `status` tool. From a shell:
 
 ```bash
-node src/server.js doctor      # runtime, paths, discovered roots
+node src/server.js doctor      # runtime, paths, discovered roots, recorded intent counts
 node src/server.js --status
 node src/server.js --db /other/project/.scope-mcp/state.db --status
 sqlite3 .scope-mcp/state.db 'select id,status,title from goals;'
 ```
 
-Status shows project/objective, scope status, goal counts and the current goal, validation evidence, coverage counts, completion timestamp, open blockers, recent decisions, and the last checkpoint's next action.
+Status shows project/objective, scope status, scope-document counts and effective revision, goal counts and the current goal, validation evidence, coverage counts, completion timestamp, open blockers, recent decisions, ordered scope documents, and the last checkpoint's next action. Doctor additionally prints whether this workspace already has durable intent — initialized or not, base recorded or missing, number of addenda — without evaluating what any of it means.
 
 ## Completion
 
@@ -444,10 +478,11 @@ Completing every goal is not completion. Before declaring done, the agent record
 ## Testing and demo
 
 ```bash
-npm test     # 46 tests: init, goal create/update/progression, checkpoints, reload-after-restart,
+npm test     # 54 tests: init, goal create/update/progression, checkpoints, reload-after-restart,
              # decisions, blockers, coverage, completion guardrails, MCP round-trips,
              # hook-driven checkpoint and fresh-context resume,
              # cold-start restore of base scope + addenda and goal reconciliation,
+             # addendum reopening completion, coverage freshness, legacy migration,
              # skill metadata, workspace state isolation (including paths with spaces),
              # portable path/state resolution, doctor diagnostics,
              # package/hook/README consistency

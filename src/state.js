@@ -137,6 +137,13 @@ export class ProjectState {
     this.db
       .prepare("INSERT INTO scope_docs (kind, at, title, text) VALUES ('addendum', ?, ?, ?)")
       .run(now(), String(title), String(text));
+    // New intent makes the old completion check stale: reopen it for
+    // re-evaluation. Goals and coverage stay as they are - the model decides
+    // what still applies.
+    if (this.isComplete()) {
+      this.setMeta('scope_status', 'accepted');
+      this.db.prepare("DELETE FROM meta WHERE key = 'completed_at'").run();
+    }
     return this.db.prepare('SELECT * FROM scope_docs ORDER BY seq DESC LIMIT 1').get();
   }
 
@@ -155,6 +162,14 @@ export class ProjectState {
       .map(({ doc, label }) => `[#${doc.seq}] ${label} accepted ${doc.at}${doc.title ? ` - ${doc.title}` : ''}\n${doc.text}`)
       .join('\n\n');
     return { base, addenda, text };
+  }
+
+  /** Counts only - what intent exists, not what it says. For status and doctor. */
+  scopeMetadata() {
+    const base = this.baseScope();
+    const addenda = this.db.prepare("SELECT COUNT(*) AS n FROM scope_docs WHERE active = 1 AND kind = 'addendum'").get().n;
+    const latest = this.db.prepare('SELECT seq FROM scope_docs WHERE active = 1 ORDER BY seq DESC LIMIT 1').get();
+    return { recorded: Boolean(base), addenda, latest: latest ? latest.seq : null };
   }
 
   /** One-line summary of the durable intent, for status and resume briefs. */
@@ -401,11 +416,21 @@ export class ProjectState {
     const gaps = coverage.filter((c) => c.status === 'missing').map((c) => c.requirement);
     const deferred = coverage.filter((c) => c.status === 'deferred').map((c) => c.requirement);
     const blockers = this.openBlockers().map((b) => b.text);
-    const ready = coverage.length > 0 && openGoals.length === 0 && gaps.length === 0;
+
+    // Coverage has to speak to the current effective scope: intent accepted after
+    // the last coverage pass needs a fresh look, so completion waits for it.
+    const latestScope = this.scopeMetadata().latest
+      ? this.db.prepare('SELECT MAX(at) AS at FROM scope_docs WHERE active = 1').get()?.at ?? ''
+      : '';
+    const latestCoverage = coverage.length ? this.db.prepare('SELECT MAX(at) AS at FROM coverage').get()?.at ?? '' : '';
+    const staleCoverage = Boolean(latestScope && latestCoverage && latestCoverage < latestScope);
+
+    const ready = coverage.length > 0 && openGoals.length === 0 && gaps.length === 0 && !staleCoverage;
 
     if (!ready && !force) {
       const missing = [];
       if (coverage.length === 0) missing.push('no scope coverage recorded yet');
+      if (staleCoverage) missing.push('coverage predates the latest accepted scope document - re-check it against the effective scope');
       missing.push(...openGoals.map((g) => `unfinished goal - ${g}`));
       missing.push(...gaps.map((g) => `gap - ${g}`));
       return { complete: false, missing, deferred, blockers, validation: this.validationState() };
@@ -432,7 +457,10 @@ export class ProjectState {
     const lines = [];
     const objective = this.meta('objective');
     if (objective) lines.push(`objective: ${truncate(objective, 160)}`);
-    if (this.baseScope()) lines.push(`effective scope: ${this.scopeSummary()}`);
+    if (this.baseScope()) {
+      lines.push(`effective scope: ${this.scopeSummary()}`);
+      lines.push('retrieve it with get_effective_scope before project-level decisions.');
+    }
     lines.push(`current goal: ${active ? `${active.id}: ${active.title}` : this.goalRows().length ? '(none active)' : '(none)'}`);
     const next = cp?.payload.next_action || this.derivedNextAction();
     lines.push(`next action: ${next || '(unset - read the effective scope, then call status)'}`);
@@ -457,6 +485,11 @@ export class ProjectState {
 
     lines.push(`objective: ${this.meta('objective') ?? '(none)'}`);
     lines.push(`scope: ${this.meta('scope_file') ?? 'SCOPE.md'} | status: ${this.meta('scope_status') ?? 'not initialized'}`);
+    const meta = this.scopeMetadata();
+    lines.push(
+      `scope documents: ${meta.recorded ? `base recorded, addenda: ${meta.addenda}` : 'none recorded - read the scope file'}` +
+        `${meta.latest ? ` | effective revision: #${meta.latest}` : ''}`
+    );
     lines.push(`effective scope: ${this.scopeSummary()}`);
     lines.push(`goals: ${counts.completed}/${goals.length} completed | pending ${counts.pending} | blocked ${counts.blocked}`);
     lines.push(`current goal: ${active ? `${active.id}: ${active.title}` : goals.length ? '(none active)' : '(none)'}`);

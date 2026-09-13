@@ -60,7 +60,7 @@ export function registerTools(server, store) {
     {
       title: 'Record the accepted base scope',
       description:
-        'Persist the accepted base scope text as durable project intent, so a fresh context never needs it pasted again. A later base record supersedes earlier ones; recorded addenda stay available in order.',
+        'Persist the accepted base scope text as durable project intent, so a fresh context never needs it pasted again. Use when the user hands over text presented as the project scope and no base scope is recorded yet. A later base record supersedes earlier ones; recorded addenda stay available in order.',
       inputSchema: {
         text: z.string().describe('The accepted base scope.'),
         title: z.string().optional().describe('Optional short label for this scope record.')
@@ -78,7 +78,7 @@ export function registerTools(server, store) {
     {
       title: 'Append an accepted scope addendum',
       description:
-        'Append one accepted addendum after the current base scope, in recorded order. Effective scope is the base plus its active addenda in order; reconciling them is the model\'s job.',
+        'Append one accepted addendum after the current base scope, in recorded order. Use when the user hands over text presented as an addendum to the existing scope. Effective scope is the base plus its active addenda in order; reconciling goals and coverage against it is the model\'s job, and a previously completed project is reopened for re-evaluation.',
       inputSchema: {
         text: z.string().describe('The accepted addendum.'),
         title: z.string().optional().describe('Optional short label for this addendum.')
@@ -86,8 +86,12 @@ export function registerTools(server, store) {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
     },
     ({ text: body, title }) => {
+      const wasComplete = store.isComplete();
       const doc = store.addScopeAddendum({ text: body, title });
-      return text(`addendum #${doc.seq} accepted ${doc.at}${title ? ` (${title})` : ''}`);
+      const lines = [`addendum #${doc.seq} accepted ${doc.at}${title ? ` (${title})` : ''}`];
+      lines.push(`effective scope now: ${store.scopeSummary()}`);
+      if (wasComplete) lines.push('project was complete - re-check goals and coverage against the new effective scope.');
+      return text(lines.join('\n'));
     }
   );
 
@@ -96,12 +100,17 @@ export function registerTools(server, store) {
     {
       title: 'Read the effective scope',
       description:
-        'Base scope plus its accepted addenda in order, with acceptance timestamps. Read this before reconciling goals and coverage after a cold start or fresh context.',
-      inputSchema: {}
+        'Base scope plus its accepted addenda in order, with acceptance timestamps. Read this before reconciling goals and coverage after a cold start or fresh context. Set include_text=false for the document index only, when the scope is large and only provenance is needed.',
+      inputSchema: { include_text: z.boolean().optional().describe('Return full document text. Default true.') }
     },
-    () => {
+    ({ include_text }) => {
       const scope = store.effectiveScope();
       if (!scope) return text('(no scope documents recorded - the scope file on disk is the contract)');
+      if (include_text === false) {
+        const rows = store.scopeDocs();
+        const index = rows.map((doc) => `[#${doc.seq}] ${doc.kind} accepted ${doc.at}${doc.title ? ` - ${doc.title}` : ''} (${doc.text.length} chars)`);
+        return text(`${index.join('\n')}\n\n(${scope.addenda.length} addendum(s) after the base; call again without include_text=false for the full text)`);
+      }
       return text(`${scope.text}\n\n(${scope.addenda.length} addendum(s) after the base)`);
     }
   );

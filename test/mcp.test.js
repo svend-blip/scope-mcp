@@ -125,6 +125,40 @@ test('blockers can stop a specific goal and unblock on selection', async () => {
   await client.close();
 });
 
+test('an addendum reopens completion and the index mode keeps context small', async () => {
+  const dbPath = dbInTmp();
+  const first = await connect(dbPath);
+  try {
+    await call(first, 'init_project', { objective: 'export reports' });
+    await call(first, 'record_scope', { text: 'Export reports as csv.', title: 'base' });
+    await call(first, 'set_goals', { goals: [{ id: 'g1', title: 'csv writer' }] });
+    await call(first, 'complete_goal', { goal_id: 'g1', validation: 'node --test: 5 pass' });
+    await call(first, 'coverage', { items: [{ requirement: 'csv export works', status: 'fulfilled', note: 'tests' }] });
+    assert.match(await call(first, 'complete_project'), /project complete/);
+
+    const added = await call(first, 'add_scope_addendum', { text: 'Also accept a --json flag.', title: 'json' });
+    assert.match(added, /addendum #2 accepted/);
+    assert.match(added, /effective scope now: 1 addendum\(s\) after the base scope/);
+    assert.match(added, /re-check goals and coverage/);
+    assert.match(await call(first, 'status'), /status: accepted/, 'completion is reopened for re-evaluation');
+    assert.match(await call(first, 'complete_project'), /not complete yet|no scope coverage/, 'the new requirement must be evaluated');
+  } finally {
+    await first.close();
+  }
+
+  const second = await connect(dbPath);
+  try {
+    const index = await call(second, 'get_effective_scope', { include_text: false });
+    assert.match(index, /\[#1\] base accepted .* - base \(\d+ chars\)/);
+    assert.match(index, /\[#2\] addendum accepted .* - json \(\d+ chars\)/);
+    assert.ok(!index.includes('Also accept a --json flag.'), 'index mode omits document bodies');
+    assert.match(await call(second, 'get_effective_scope'), /Also accept a --json flag\./, 'full text still available');
+    assert.match(await call(second, 'status'), /scope documents: base recorded, addenda: 1 \| effective revision: #2/);
+  } finally {
+    await second.close();
+  }
+});
+
 test('tool errors surface as MCP errors', async () => {
   const client = await connect(dbInTmp());
   await call(client, 'init_project', { objective: 'x' });

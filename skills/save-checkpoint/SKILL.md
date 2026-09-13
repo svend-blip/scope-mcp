@@ -20,6 +20,8 @@ Follow the steps in order. Do not ask the user to repeat anything already in dur
 
 3. If the project is not initialized: look for `SCOPE.md`, then `AGENTS.md` or `README.md` in the workspace. Call `init_project` with an objective taken from that text. If a scope file exists but no scope documents are recorded yet, call `record_scope` with its accepted text. If no scope or durable intent can be read from the workspace, report that limitation and stop — do not invent project scope.
 
+   Intake works the same way at any point: text the user presents as the project scope becomes the base scope through `record_scope` when none is recorded yet; text presented as an addition or modification to the existing scope goes in with `add_scope_addendum`, in the order it was accepted. Nothing else has to classify text.
+
 4. Determine what to record, from state plus what just happened in this session:
    - current goal: from `status`, or `next_goal`
    - work completed since the last checkpoint: finished goals, edits that are already on disk
@@ -38,6 +40,7 @@ Follow the steps in order. Do not ask the user to repeat anything already in dur
 
 ## Boundaries
 
+* Project intent and execution state are separate. Scope documents stay in the scope documents (`record_scope`, `add_scope_addendum`); checkpoints hold only the working position — goal, progress, validation, issues, decisions, next action. Do not paste scope or addendum text into checkpoint fields.
 * The repository remains the source of truth for implementation. Do not copy code into state.
 * Coverage and completion are separate calls: use `coverage` and `complete_project` only when the scope is actually satisfied.
 * Hooks already checkpoint automatically at turn boundaries. This skill is for an explicit, higher-quality save on request; it uses the same stored fields, so running both is harmless.

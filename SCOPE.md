@@ -340,6 +340,8 @@ The completion process should identify:
 
 Only mark the project complete when the scope is reasonably satisfied.
 
+Coverage is evaluated against the current effective scope, not against the original base scope alone. When an addendum is accepted after completion, completion becomes eligible for re-evaluation: previously completed goals and still-valid coverage remain, the new requirements get their own goals and coverage entries, and the completion check waits until coverage has been reconsidered after the newest accepted scope document. Newly added requirements are never marked fulfilled automatically — the model checks them against the repository.
+
 ## 13. Recovery
 
 The system should recover cleanly after:
@@ -491,6 +493,8 @@ The project is complete when:
 15. No core path or instruction depends on one machine layout: repository location, Node executable, Harness home, profile name and skill root are all detected rather than assumed.
 16. Integration level is chosen from detected capabilities, missing lifecycle hooks degrade to manual skills plus MCP tools, and every support claim states whether it was Tested or only Inspected/Expected.
 17. Installation is idempotent, targets only the profiles in use, preserves unrelated configuration, and uninstall removes the integration while keeping project state.
+18. Project intent and execution state are stored separately, a fresh context restores both with `get_effective_scope` and `status`, and checkpoints do not duplicate scope text.
+19. An addendum accepted after completion reopens completion while preserving completed goals and valid coverage, and legacy databases gain the scope-document table without losing recorded work.
 
 ## 21. Initial Execution Instruction
 

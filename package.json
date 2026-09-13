@@ -10,6 +10,8 @@
     "src",
     "hooks.json",
     "skills",
+    "test",
+    "scripts",
     "README.md",
     "SCOPE.md"
   ],

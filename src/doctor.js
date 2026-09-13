@@ -70,6 +70,39 @@ function writeCheck(statePath) {
   }
 }
 
+/** What durable state already exists here. Read-only: opens the file without writing. */
+function projectSummary(statePath) {
+  if (!existsSync(statePath)) return 'none yet - call init_project when this workspace starts';
+  let db;
+  try {
+    db = new DatabaseSync(statePath, { readOnly: true });
+  } catch {
+    return 'present (opened by the server at runtime)';
+  }
+  try {
+    const has = (table) => db.prepare('SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?').get('table', table) !== undefined;
+    if (!has('meta')) return 'none yet - call init_project when this workspace starts';
+    const meta = (key) => db.prepare('SELECT value FROM meta WHERE key = ?').get(key)?.value ?? null;
+    const count = (sql) => db.prepare(sql).get().n;
+    const docs = has('scope_docs') ? count('SELECT COUNT(*) AS n FROM scope_docs WHERE active = 1') : 0;
+    const addenda = has('scope_docs') ? count("SELECT COUNT(*) AS n FROM scope_docs WHERE active = 1 AND kind = 'addendum'") : 0;
+    const latest = has('scope_docs') ? db.prepare('SELECT seq FROM scope_docs WHERE active = 1 ORDER BY seq DESC LIMIT 1').get()?.seq : null;
+    const goals = has('goals') ? count('SELECT COUNT(*) AS n FROM goals') : 0;
+    const done = has('goals') ? count("SELECT COUNT(*) AS n FROM goals WHERE status = 'completed'") : 0;
+    const checkpoint = has('checkpoints') ? db.prepare('SELECT at FROM checkpoints ORDER BY seq DESC LIMIT 1').get()?.at : null;
+    return [
+      meta('objective') ? 'initialized' : 'tables exist, no objective yet',
+      `scope documents: ${docs ? `base${addenda ? ` + ${addenda} addenda` : ''}, latest #${latest}` : 'none recorded'}`,
+      `goals: ${done}/${goals} completed`,
+      `checkpoint: ${checkpoint ?? '(none)'}`
+    ].join(' | ');
+  } catch {
+    return 'present but unreadable';
+  } finally {
+    db.close();
+  }
+}
+
 /** Text report for `scope-mcp doctor`. */
 export function doctorReport() {
   const statePath = defaultDbPath();
@@ -84,6 +117,7 @@ export function doctorReport() {
     `workspace: ${process.cwd()}`,
     `state file: ${statePath}`,
     `state dir: ${writeCheck(statePath)}`,
+    `project state: ${projectSummary(statePath)}`,
     `harness home: ${env.DSH_HOME ? expandHomePath(env.DSH_HOME) : `${join(homedir(), '.dsh')} (default)`}`,
     `profiles at ${profiles.dir}: ${profiles.profiles.length ? profiles.profiles.join(', ') : '(none)'}`,
     `skill roots: ${roots.length ? roots.join(', ') : '(none existing)'}`

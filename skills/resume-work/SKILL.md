@@ -6,7 +6,7 @@ whenToUse: A fresh Harness session, a restarted machine, a compacted context, or
 
 # Resume Work
 
-Rebuild the working position from durable state and continue. The user should not have to re-supply anything.
+Rebuild the working position from durable state and continue. The user should not have to re-supply anything. Two things are restored: what the project is supposed to satisfy (effective scope) and where it currently is (execution state).
 
 ## Procedure
 
@@ -14,9 +14,9 @@ Follow the steps in order.
 
 1. Work in the current DeepSeek Harness workspace. State is workspace-local: `<workspace>/.scope-mcp/state.db` (or `$SCOPE_MCP_DB`). Do not reuse another project's state file.
 
-2. Call `status`. Read, in this order: objective, effective-scope line, goal counts, current goal, validation, coverage, blockers, decisions, last checkpoint and its next action.
+2. Call `get_effective_scope` first. It returns the accepted base scope plus its accepted addenda in recorded order, each with its acceptance stamp — that is the project contract to work against. With a large scope, ask for the document index only (`include_text: false`) and read the parts the current work needs. If nothing is recorded, read `SCOPE.md` from the workspace instead.
 
-3. Call `get_effective_scope` when scope documents exist. The effective scope is the accepted base plus its accepted addenda in recorded order; later entries refine earlier ones. If nothing is recorded, read `SCOPE.md` from the workspace instead.
+3. Call `status`. Read, in this order: objective, scope-document counts, effective-scope line, goal counts, current goal, validation, coverage, blockers, decisions, last checkpoint and its next action. `status` prints summaries and counts, not the full documents — the full text comes from step 2 when needed.
 
 4. From that state take: current goal, completed goals with their validation evidence, pending goals, validation status, open blockers, recent decisions, latest checkpoint, recorded next action.
 
@@ -26,7 +26,10 @@ Follow the steps in order.
    - work that exists on disk but is unrecorded → `complete_goal` with the observed evidence
    - recorded completion the repository does not show → say so, then reopen or continue the goal
    - goal list stale against the effective scope → `set_goals`, keeping completed goals and adding or adjusting only what the effective scope requires
+   - requirement in the effective scope with no coverage row → evaluate it against the repository and add a `coverage` entry; existing rows that still hold stay as they are
    - blocker no longer real → `resolve_blocker`
+
+   An addendum accepted after completion reopens the completion check on purpose: previous completed goals stay completed, and only the new requirements need goals, work and coverage. Never mark new requirements fulfilled without checking the repository.
 
    The repository is authoritative for implementation reality; scope-mcp is authoritative for durable working state and persisted intent. Resolve the discrepancy instead of picking whichever is convenient.
 
