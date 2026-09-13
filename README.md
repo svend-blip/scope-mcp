@@ -71,11 +71,13 @@ Register it as a stdio MCP server for the session. Harness requires an absolute 
       "name": "scope-mcp",
       "command": "/usr/bin/node",
       "args": ["/absolute/path/to/scope-mcp/src/server.js"],
-      "env": { "SCOPE_MCP_DB": "/absolute/path/to/project/.scope-mcp/state.db" }
+      "env": [{ "name": "SCOPE_MCP_DB", "value": "/absolute/path/to/project/.scope-mcp/state.db" }]
     }
   ]
 }
 ```
+
+Harness accepts two MCP transports: omit `type` for stdio (shown above), or `{ "type": "http", "url": "..." }` for Streamable HTTP. `command` must be an absolute path, and `env` / `headers` are ordered `{ "name", "value" }` entries rather than plain maps.
 
 `SCOPE_MCP_DB` is optional; without it the state file is `<cwd>/.scope-mcp/state.db`, which is what you want when the agent runs in the project workspace.
 
