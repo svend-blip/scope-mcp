@@ -8,6 +8,8 @@
   },
   "files": [
     "src",
+    "scripts",
+    "skills",
     "README.md",
     "SCOPE.md"
   ],

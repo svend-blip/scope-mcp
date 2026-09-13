@@ -7,10 +7,13 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-const SERVER = new URL('../src/server.js', import.meta.url).pathname;
+// Native absolute path on every platform. A URL .pathname is POSIX-shaped
+// ("/C:/Users/...") and Windows would resolve it to "C:\C:\Users\...".
+const SERVER = fileURLToPath(new URL('../src/server.js', import.meta.url));
 // Honor SCOPE_MCP_DB when set, otherwise keep the demo self-contained in a temp dir.
 const dbPath = process.env.SCOPE_MCP_DB ?? join(mkdtempSync(join(tmpdir(), 'scope-mcp-demo-')), 'state.db');
 

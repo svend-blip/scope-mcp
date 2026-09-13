@@ -6,7 +6,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 export const GOAL_STATUSES = ['pending', 'active', 'completed', 'blocked'];
 export const COVERAGE_STATUSES = ['fulfilled', 'deferred', 'missing'];
@@ -15,7 +15,7 @@ export const COVERAGE_STATUSES = ['fulfilled', 'deferred', 'missing'];
 export function defaultDbPath(cwd = process.cwd()) {
   const fromEnv = process.env.SCOPE_MCP_DB;
   if (fromEnv) return fromEnv;
-  return `${cwd}/.scope-mcp/state.db`;
+  return join(cwd, '.scope-mcp', 'state.db');
 }
 
 function now() {
@@ -229,10 +229,14 @@ export class ProjectState {
 
   // ---- checkpoints ------------------------------------------------------
 
-  /** Snapshot the working position. Missing fields are derived from state. */
-  checkpoint(fields = {}) {
+  /**
+   * Derive the checkpoint payload for the current working position without
+   * writing it. Missing fields are filled from stored state, exactly as
+   * checkpoint() does before inserting.
+   */
+  deriveCheckpoint(fields = {}) {
     const active = this.activeGoalRow();
-    const payload = {
+    return {
       current_goal: fields.current_goal ?? (active ? `${active.id}: ${active.title}` : this.meta('next_action') ?? ''),
       work_completed: fields.work_completed ?? this.validations().map((v) => `${v.id}: ${v.validation}`).join('; '),
       important_decisions: fields.important_decisions ?? this.decisions(5).map((d) => d.text).join('; '),
@@ -240,6 +244,11 @@ export class ProjectState {
       unresolved_issues: fields.unresolved_issues ?? this.openBlockers().map((b) => b.text).join('; '),
       next_action: fields.next_action ?? this.meta('next_action') ?? ''
     };
+  }
+
+  /** Snapshot the working position. Missing fields are derived from state. */
+  checkpoint(fields = {}) {
+    const payload = this.deriveCheckpoint(fields);
     this.db.prepare('INSERT INTO checkpoints (at, payload) VALUES (?, ?)').run(now(), JSON.stringify(payload));
     this.setMeta('next_action', payload.next_action);
     return { at: this.lastCheckpointAt(), payload };

@@ -14,6 +14,9 @@ const HELP = `scope-mcp - local MCP server holding durable scope-driven project 
 Usage:
   scope-mcp                  run the MCP server on stdio
   scope-mcp --status         print current project status and exit
+  scope-mcp --doctor         print a read-only environment diagnostic and exit
+  scope-mcp --checkpoint [next action]
+                             snapshot the working position and exit
   scope-mcp --db <path>      use another state file (also: $SCOPE_MCP_DB)
   scope-mcp --help           this text
 `;
@@ -37,6 +40,24 @@ const store = new ProjectState(dbPath ?? defaultDbPath());
 
 if (argv.includes('--status')) {
   process.stdout.write(`${store.statusText()}\n`);
+  store.close();
+  process.exit(0);
+}
+
+if (argv.includes('--doctor')) {
+  const { doctorReport } = await import('./tools.js');
+  process.stdout.write(`${doctorReport({ dbPath: dbPath ?? defaultDbPath() }).join('\n')}\n`);
+  store.close();
+  process.exit(0);
+}
+
+const checkpointIndex = argv.indexOf('--checkpoint');
+if (checkpointIndex !== -1) {
+  const nextAction = argv[checkpointIndex + 1] ?? '';
+  const cp = store.checkpoint({ next_action: nextAction });
+  const lines = [`checkpoint at ${cp.at}`];
+  for (const [key, value] of Object.entries(cp.payload)) lines.push(`  ${key}: ${value || '(unset)'}`);
+  process.stdout.write(`${lines.join('\n')}\n`);
   store.close();
   process.exit(0);
 }

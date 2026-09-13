@@ -1,12 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve, win32 } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-const SERVER = new URL('../src/server.js', import.meta.url).pathname;
+// A URL's .pathname is POSIX-shaped even on Windows ("/C:/Users/..."), and
+// Windows then resolves it as "C:\C:\Users\...". fileURLToPath yields a
+// native absolute path on every platform instead.
+const SERVER = fileURLToPath(new URL('../src/server.js', import.meta.url));
 
 async function connect(dbPath) {
   const client = new Client({ name: 'scope-mcp-test', version: '0.0.0' });
@@ -26,6 +30,52 @@ function dbInTmp() {
   return join(mkdtempSync(join(tmpdir(), 'scope-mcp-mcp-')), 'state.db');
 }
 
+test('server launch path is a native absolute path, never a URL pathname', () => {
+  assert.ok(isAbsolute(SERVER), `server path must be absolute: ${SERVER}`);
+  assert.equal(
+    resolve(SERVER),
+    SERVER,
+    'server path must already be fully resolved, not a POSIX pathname pending drive/root normalization'
+  );
+  assert.ok(existsSync(SERVER), `server file must exist at the computed path: ${SERVER}`);
+
+  if (process.platform === 'win32') {
+    assert.match(SERVER, /^[A-Za-z]:[\\/]/, 'a Windows path must start with a drive root');
+    assert.doesNotMatch(
+      SERVER,
+      /^[A-Za-z]:[\\/][A-Za-z]:[\\/]/,
+      `a Windows path must never duplicate its drive root, e.g. C:\\C:\\...: ${SERVER}`
+    );
+  } else {
+    assert.match(SERVER, /^\//, 'a POSIX path must start at the filesystem root');
+    assert.ok(!SERVER.includes('\\'), 'a POSIX path must not contain backslashes');
+  }
+
+  // Regression for the duplicated-drive bug: simulate how Windows resolves
+  // argv[1] regardless of the host platform. A URL pathname such as
+  // "/C:/Users/..." resolves to "C:\C:\Users\..." and must be rejected here.
+  const asWindowsSeesIt = win32.resolve(SERVER);
+  assert.doesNotMatch(
+    asWindowsSeesIt,
+    /^[A-Za-z]:[\\/][A-Za-z]:[\\/]/,
+    `Windows resolution must not produce a doubled root like C:\\C:\\...: ${asWindowsSeesIt}`
+  );
+});
+
+test('per-call workspace argument binds state to <workspace>/.scope-mcp/state.db', async () => {
+  const client = await connect(dbInTmp());
+  const ws = mkdtempSync(join(tmpdir(), 'scope-mcp-ws-'));
+  await call(client, 'init_project', { objective: 'Workspace project', workspace: ws });
+  await call(client, 'set_goals', { workspace: ws, goals: [{ id: 'g1', title: 'one' }] });
+  const status = await call(client, 'status', { workspace: ws });
+  assert.match(status, /objective: Workspace project/);
+  assert.match(status, /\[active\] g1 - one/);
+  assert.ok(existsSync(join(ws, '.scope-mcp', 'state.db')), 'state file lives inside the workspace');
+  const def = await call(client, 'status');
+  assert.doesNotMatch(def, /Workspace project/, 'the server default store is not touched by workspace calls');
+  await client.close();
+});
+
 test('server exposes a small tool surface over stdio', async () => {
   const client = await connect(dbInTmp());
   const { tools } = await client.listTools();
@@ -36,6 +86,7 @@ test('server exposes a small tool surface over stdio', async () => {
       'complete_goal',
       'complete_project',
       'coverage',
+      'doctor',
       'init_project',
       'next_goal',
       'record_blocker',
@@ -129,5 +180,29 @@ test('tool errors surface as MCP errors', async () => {
   const result = await client.callTool({ name: 'complete_goal', arguments: { goal_id: 'nope', validation: 'proof' } });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /unknown goal id: nope/);
+  await client.close();
+});
+
+test('workspace paths containing spaces bind state correctly', async () => {
+  const client = await connect(dbInTmp());
+  const ws = join(mkdtempSync(join(tmpdir(), 'scope-mcp ws-')), 'dir with spaces');
+  await call(client, 'init_project', { objective: 'Spaced workspace', workspace: ws });
+  const status = await call(client, 'status', { workspace: ws });
+  assert.match(status, /objective: Spaced workspace/);
+  assert.ok(existsSync(join(ws, '.scope-mcp', 'state.db')), 'state file lands inside the spaced workspace path');
+  await client.close();
+});
+
+test('doctor reports a read-only environment diagnostic', async () => {
+  const client = await connect(dbInTmp());
+  const ws = mkdtempSync(join(tmpdir(), 'scope-mcp-doctor-'));
+  const report = await call(client, 'doctor', { workspace: ws });
+  assert.match(report, /platform: /);
+  assert.match(report, /node executable: /);
+  assert.match(report, /node version: /);
+  assert.match(report, /node:sqlite: available/);
+  assert.match(report, /effective project state path: /);
+  assert.match(report, /state directory/);
+  assert.match(report, /workspace state path: /);
   await client.close();
 });
