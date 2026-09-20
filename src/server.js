@@ -32,6 +32,15 @@ if (argv.includes('--help') || argv.includes('-h')) {
   process.exit(0);
 }
 
+{
+  const { nodeTooOld } = await import('./runtime-check.js');
+  const refusal = nodeTooOld(process.versions.node);
+  if (refusal) {
+    process.stderr.write(`${refusal}\n`);
+    process.exit(1);
+  }
+}
+
 if (argv.includes('doctor') || argv.includes('--doctor')) {
   const { doctorReport } = await import('./doctor.js');
   process.stdout.write(`${doctorReport()}\n`);
