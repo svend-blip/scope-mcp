@@ -926,6 +926,13 @@ Regression tests cover native Windows drive-root behavior (`/^[A-Za-z]:[\\/]/`, 
 
 ## Testing and demo
 
+[![ci](https://github.com/svend-blip/scope-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/svend-blip/scope-mcp/actions/workflows/ci.yml)
+
+Every push runs the suite on Linux and Windows under Node 22 and Node 24, and starts the server the way a
+launcher does: by path, from another directory, with a `--db` file in a directory it has to create
+(`.github/workflows/ci.yml`). The first Windows run, 2026-09-21, found eight failing tests and no failing
+server: three test files located `src/server.js` through `URL.pathname`.
+
 ```bash
 npm test     # 54 tests: init, goal create/update/progression, checkpoints, reload-after-restart,
              # decisions, blockers, coverage, completion guardrails, MCP round-trips,
