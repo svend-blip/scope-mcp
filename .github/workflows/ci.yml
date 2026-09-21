@@ -1,0 +1,46 @@
+# The suite on the platforms scope-mcp is started on. It had only ever run
+# on one Linux machine; FlowRunner ships it to Windows, where the first start
+# was going to be somebody's first evening with it.
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # 22 is the floor (node:sqlite arrived in 22.5); 24 is what
+        # `winget install OpenJS.NodeJS.LTS` gives a new machine.
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --version
+      - run: npm ci
+      - run: npm test
+      # The server as a launcher starts it: by path, from another directory,
+      # with a state file it has to create. --status exits after one read.
+      - name: start the server by path, state file in a new directory
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/elsewhere" && cd "$RUNNER_TEMP/elsewhere"
+          node "$GITHUB_WORKSPACE/src/server.js" --db .flowrunner/2000/scope-mcp/state.db --status
+          test -f .flowrunner/2000/scope-mcp/state.db
