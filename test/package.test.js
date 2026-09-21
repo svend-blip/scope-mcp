@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ProjectState, defaultDbPath } from '../src/state.js';
 
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -53,10 +54,12 @@ test('each workspace resolves its own state file', () => {
   const saved = process.env.SCOPE_MCP_DB;
   delete process.env.SCOPE_MCP_DB;
   try {
-    assert.equal(defaultDbPath('/work/alpha'), '/work/alpha/.scope-mcp/state.db');
-    assert.equal(defaultDbPath('/work/beta'), '/work/beta/.scope-mcp/state.db');
+    // join(): the separator is the platform's. The literal '/work/alpha/...'
+    // made this a Linux-only statement about a function that is right on both.
+    assert.equal(defaultDbPath('/work/alpha'), join('/work/alpha', '.scope-mcp', 'state.db'));
+    assert.equal(defaultDbPath('/work/beta'), join('/work/beta', '.scope-mcp', 'state.db'));
     assert.notEqual(defaultDbPath('/work/alpha'), defaultDbPath('/work/beta'));
-    assert.match(defaultDbPath(), /\.scope-mcp\/state\.db$/, 'no override still means a per-workspace file');
+    assert.match(defaultDbPath(), /\.scope-mcp[\\/]state\.db$/, 'no override still means a per-workspace file');
   } finally {
     if (saved !== void 0) process.env.SCOPE_MCP_DB = saved;
   }

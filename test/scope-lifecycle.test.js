@@ -6,8 +6,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ProjectState } from '../src/state.js';
+import { fileURLToPath } from 'node:url';
 
-const SERVER = new URL('../src/server.js', import.meta.url).pathname;
+// A native path: URL.pathname is POSIX-shaped on Windows (/D:/a/...), and node
+// then looks for D:\\D:\\a\\... - found when the suite first ran there (CI, 2026-09-21).
+const SERVER = fileURLToPath(new URL('../src/server.js', import.meta.url));
 
 function workspaceDir(label) {
   const dir = mkdtempSync(join(tmpdir(), `scope-lifecycle-${label}-`));
