@@ -26,8 +26,48 @@ function goalLines(rows) {
   return rows.map((g) => `[${g.status}] ${g.id} - ${g.title}${g.validation ? ` (${g.validation})` : ''}`).join('\n');
 }
 
-export function registerTools(server, store) {
-  server.registerTool(
+const workspaceArg = z
+  .string()
+  .optional()
+  .describe(
+    'Absolute path of the repository you are working in. scope-mcp applies only when that repository has a SCOPE.md, and keeps its state there. Required when the server is shared between workspaces.'
+  );
+
+/**
+ * Register the tool surface. `target` is either one ProjectState (a per-project
+ * server) or a resolver `workspace -> { store } | { error }` for a server shared
+ * between workspaces. Handlers are synchronous, so the per-call store is bound
+ * for exactly the duration of one handler.
+ */
+export function registerTools(server, target) {
+  const resolve = typeof target === 'function' ? target : () => ({ store: target });
+  let current = null;
+  const store = new Proxy(
+    {},
+    {
+      get(_, key) {
+        const value = current[key];
+        return typeof value === 'function' ? value.bind(current) : value;
+      }
+    }
+  );
+  const tools = {
+    registerTool(name, definition, handler) {
+      const inputSchema = { ...(definition.inputSchema ?? {}), workspace: workspaceArg };
+      return server.registerTool(name, { ...definition, inputSchema }, (args = {}, extra) => {
+        const resolved = resolve(args.workspace);
+        if (resolved.error) return { ...text(resolved.error), isError: true };
+        current = resolved.store;
+        try {
+          return handler(args, extra);
+        } finally {
+          current = null;
+        }
+      });
+    }
+  };
+
+  tools.registerTool(
     'init_project',
     {
       title: 'Initialize project from accepted scope',
@@ -44,7 +84,7 @@ export function registerTools(server, store) {
       text(store.init({ objective, scopeFile: scope_file ?? 'SCOPE.md', reset: Boolean(reset) }))
   );
 
-  server.registerTool(
+  tools.registerTool(
     'status',
     {
       title: 'Inspect project status',
@@ -55,7 +95,7 @@ export function registerTools(server, store) {
     () => text(store.statusText())
   );
 
-  server.registerTool(
+  tools.registerTool(
     'record_scope',
     {
       title: 'Record the accepted base scope',
@@ -73,7 +113,7 @@ export function registerTools(server, store) {
     }
   );
 
-  server.registerTool(
+  tools.registerTool(
     'add_scope_addendum',
     {
       title: 'Append an accepted scope addendum',
@@ -95,7 +135,7 @@ export function registerTools(server, store) {
     }
   );
 
-  server.registerTool(
+  tools.registerTool(
     'get_effective_scope',
     {
       title: 'Read the effective scope',
@@ -115,7 +155,7 @@ export function registerTools(server, store) {
     }
   );
 
-  server.registerTool(
+  tools.registerTool(
     'set_goals',
     {
       title: 'Establish or update generated goals',
@@ -126,7 +166,7 @@ export function registerTools(server, store) {
     ({ goals }) => text(goalLines(store.setGoals(goals)))
   );
 
-  server.registerTool(
+  tools.registerTool(
     'next_goal',
     {
       title: 'Get or select the current goal',
@@ -141,7 +181,7 @@ export function registerTools(server, store) {
     }
   );
 
-  server.registerTool(
+  tools.registerTool(
     'complete_goal',
     {
       title: 'Mark a goal complete with validation',
@@ -163,7 +203,7 @@ export function registerTools(server, store) {
     }
   );
 
-  server.registerTool(
+  tools.registerTool(
     'record_decision',
     {
       title: 'Record an important decision',
@@ -174,7 +214,7 @@ export function registerTools(server, store) {
     ({ text: body }) => text(`decision #${store.addDecision(body).seq} recorded`)
   );
 
-  server.registerTool(
+  tools.registerTool(
     'record_blocker',
     {
       title: 'Record or update a blocker',
@@ -196,7 +236,7 @@ export function registerTools(server, store) {
     }
   );
 
-  server.registerTool(
+  tools.registerTool(
     'resolve_blocker',
     {
       title: 'Resolve a blocker',
@@ -206,7 +246,7 @@ export function registerTools(server, store) {
     ({ seq }) => text(`blocker #${store.resolveBlocker(seq).seq} resolved`)
   );
 
-  server.registerTool(
+  tools.registerTool(
     'checkpoint',
     {
       title: 'Checkpoint work state before compaction',
@@ -230,7 +270,7 @@ export function registerTools(server, store) {
     }
   );
 
-  server.registerTool(
+  tools.registerTool(
     'coverage',
     {
       title: 'Record scope coverage',
@@ -247,7 +287,7 @@ export function registerTools(server, store) {
     }
   );
 
-  server.registerTool(
+  tools.registerTool(
     'complete_project',
     {
       title: 'Check coverage and mark the project complete',

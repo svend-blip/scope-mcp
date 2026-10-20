@@ -9,7 +9,11 @@
  * outcome from stdout, so these handlers only read a payload and build strings:
  * no daemon, no scheduler, no polling.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+// zstd arrived in node:zlib with Node 22.15; on an older Node the child check is simply skipped.
+import * as zlib from 'node:zlib';
 
 /** Harness event labels, matched case-insensitively against CLI arguments. */
 const SESSION_START = new Set(['session-start', 'sessionstart']);
@@ -36,6 +40,43 @@ export function readStdinPayload(fd = 0) {
 /** Identity used to inject a resume brief at most once per context. */
 export function sessionKey(payload = {}) {
   return String(payload.session_id || process.env.DSH_SESSION_ID || payload.cwd || 'default');
+}
+
+/**
+ * Whether a DSH session is a delegated child (a workflow or subagent run).
+ * Children get their task from their parent, not from the project state: a
+ * resume brief appended after that task hijacks it, and their checkpoints
+ * would overwrite the project's working position. The session header DSH
+ * writes says so (`origin: "subagent"` / `delegationDepth > 0`); a session
+ * that cannot be found is treated as top level.
+ */
+export function isDelegatedChild(sessionId, sessionsDir = join(homedir(), '.dsh', 'sessions')) {
+  const id = String(sessionId || '');
+  if (typeof zlib.zstdDecompressSync !== 'function') return false;
+  if (!id || id.includes('/') || id.includes('\\')) return false;
+  let workspaces;
+  try {
+    workspaces = readdirSync(sessionsDir);
+  } catch {
+    return false;
+  }
+  for (const ws of workspaces) {
+    let raw;
+    try {
+      raw = readFileSync(join(sessionsDir, ws, id, 'session.v3.jsonl.zstd'));
+    } catch {
+      continue;
+    }
+    try {
+      const text = zlib.zstdDecompressSync(raw).toString('utf8');
+      const first = JSON.parse(text.slice(0, text.indexOf('\n') === -1 ? undefined : text.indexOf('\n')));
+      const header = first.header ?? first;
+      return header.origin === 'subagent' || Number(header.delegationDepth) > 0;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 /** Wrap text in the structured stdout shape Harness decodes. */

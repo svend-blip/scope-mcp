@@ -483,6 +483,14 @@ Harness accepts two MCP transports: omit `type` for stdio (shown above), or `{ "
 
 `SCOPE_MCP_DB` is optional. Without it the state file is `<cwd>/.scope-mcp/state.db`, which is what you want when the agent runs in the project workspace; a leading `~` expands against the platform home. Setting it explicitly is for one fixed shared workspace.
 
+### Only a repository with a SCOPE.md, and one server for many workspaces
+
+scope-mcp applies only to a repository that has its own `SCOPE.md`. Elsewhere it stays out: the hooks inject nothing and create no `.scope-mcp/`, and a tool call answers `no SCOPE.md in <dir>: scope-mcp does not apply` (an explicit `--db` / `SCOPE_MCP_DB` is the caller's choice and is used as given).
+
+DSH Web starts **one** scope-mcp server for all its sessions, with one fixed `cwd`, so the server cannot tell which repository a call belongs to. Every tool therefore takes an optional `workspace` argument — the absolute path of the repository the agent works in — and keeps that repository's state in `<workspace>/.scope-mcp/state.db`. Set `SCOPE_MCP_REQUIRE_WORKSPACE=1` in the server's `env` for a shared server: a call without `workspace` is then refused instead of landing in the server's own directory, which is how one project's state used to reach every session.
+
+The hooks also stay out of delegated DSH children (workflow and subagent runs, session header `origin: "subagent"`): those get their task from the parent, and a resume brief appended after it hijacks it — a review child on gpt-oss-120b followed the brief instead of reviewing (2026-10-20).
+
 Note for programmatic clients: call tools with the object form `callTool({ name, arguments })`. Some SDK client builds treat the two-positional-argument shorthand inconsistently.
 
 Both blocks are the same server: the JSON above registers it for one session, and [Harness configuration required](#harness-configuration-required) shows the profile-level YAML that mounts it permanently together with the hook row that makes checkpointing automatic.

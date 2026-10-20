@@ -5,7 +5,7 @@
  * planning logic: this module stores and reports, the model reasons.
  */
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -21,6 +21,14 @@ export function expandHomePath(value) {
   if (text === '~') return homedir();
   if (text.startsWith('~/') || text.startsWith('~\\')) return join(homedir(), text.slice(2));
   return text;
+}
+
+/**
+ * Whether scope-mcp applies to a workspace at all: only a repository that has
+ * its own SCOPE.md has a scope to track. Everywhere else scope-mcp stays out.
+ */
+export function hasScope(dir) {
+  return existsSync(join(expandHomePath(dir), 'SCOPE.md'));
 }
 
 /** Where the state file lives for this workspace: one file per workspace. */
