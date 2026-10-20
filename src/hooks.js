@@ -61,12 +61,17 @@ export function isDelegatedChild(sessionId, sessionsDir = join(homedir(), '.dsh'
     return false;
   }
   for (const ws of workspaces) {
+    // DSH 0.2.x writes session.v4 (same header fields) and leaves a migrated session's v3 behind.
     let raw;
-    try {
-      raw = readFileSync(join(sessionsDir, ws, id, 'session.v3.jsonl.zstd'));
-    } catch {
-      continue;
+    for (const name of ['session.v4.jsonl.zstd', 'session.v3.jsonl.zstd']) {
+      try {
+        raw = readFileSync(join(sessionsDir, ws, id, name));
+        break;
+      } catch {
+        raw = undefined;
+      }
     }
+    if (raw === undefined) continue;
     try {
       const text = zlib.zstdDecompressSync(raw).toString('utf8');
       const first = JSON.parse(text.slice(0, text.indexOf('\n') === -1 ? undefined : text.indexOf('\n')));

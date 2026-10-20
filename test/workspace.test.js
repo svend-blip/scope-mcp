@@ -80,6 +80,15 @@ test('hooks do nothing inside a delegated DSH child session, even in a scoped wo
   assert.equal(existsSync(join(repo, '.scope-mcp')), false);
 });
 
+test('isDelegatedChild reads a DSH 0.2.x session.v4 header too', zstd, () => {
+  const home = tmp('scope-mcp-home-');
+  const dir = join(home, '.dsh', 'sessions', '--ws--', 'c4');
+  mkdirSync(dir, { recursive: true });
+  const header = JSON.stringify({ type: 'session', version: 4, id: 'c4', origin: 'subagent', delegationDepth: 1 });
+  writeFileSync(join(dir, 'session.v4.jsonl.zstd'), zlib.zstdCompressSync(Buffer.from(`${header}\n`)));
+  assert.equal(isDelegatedChild('c4', join(home, '.dsh', 'sessions')), true);
+});
+
 test('isDelegatedChild reads the session header; unknown sessions count as top level', zstd, () => {
   const child = homeWithSession('c1', { origin: 'subagent', delegationDepth: 1 });
   const top = homeWithSession('session-t1', { delegationDepth: 0 });
