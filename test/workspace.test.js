@@ -80,6 +80,14 @@ test('hooks do nothing inside a delegated DSH child session, even in a scoped wo
   assert.equal(existsSync(join(repo, '.scope-mcp')), false);
 });
 
+test('hooks find the session under $DSH_HOME, not only ~/.dsh', zstd, () => {
+  const repo = scopedRepo();
+  const dshHome = join(homeWithSession('c-home', { origin: 'subagent', delegationDepth: 1 }), '.dsh');
+  const elsewhere = tmp('scope-mcp-home-');
+  const env = { HOME: elsewhere, USERPROFILE: elsewhere, DSH_HOME: dshHome };
+  assert.equal(runHook('session-start', { session_id: 'c-home', cwd: repo }, env), '');
+});
+
 test('isDelegatedChild reads a DSH 0.2.x session.v4 header too', zstd, () => {
   const home = tmp('scope-mcp-home-');
   const dir = join(home, '.dsh', 'sessions', '--ws--', 'c4');

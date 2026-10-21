@@ -48,9 +48,10 @@ export function sessionKey(payload = {}) {
  * resume brief appended after that task hijacks it, and their checkpoints
  * would overwrite the project's working position. The session header DSH
  * writes says so (`origin: "subagent"` / `delegationDepth > 0`); a session
- * that cannot be found is treated as top level.
+ * that cannot be found is treated as top level. The sessions live under $DSH_HOME
+ * (default ~/.dsh), the same home DSH itself resolves.
  */
-export function isDelegatedChild(sessionId, sessionsDir = join(homedir(), '.dsh', 'sessions')) {
+export function isDelegatedChild(sessionId, sessionsDir = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'sessions')) {
   const id = String(sessionId || '');
   if (typeof zlib.zstdDecompressSync !== 'function') return false;
   if (!id || id.includes('/') || id.includes('\\')) return false;
