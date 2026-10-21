@@ -88,6 +88,19 @@ test('hooks find the session under $DSH_HOME, not only ~/.dsh', zstd, () => {
   assert.equal(runHook('session-start', { session_id: 'c-home', cwd: repo }, env), '');
 });
 
+test('under DSH (--dsh) a bare-uuid session is a child even before its log exists', () => {
+  const repo = scopedRepo();
+  const env = { ...process.env };
+  delete env.SCOPE_MCP_DB;
+  const run = (args, id) => execFileSync(process.execPath, ['--no-warnings', SERVER, 'hook', 'session-start', ...args], {
+    input: JSON.stringify({ session_id: id }), encoding: 'utf8', cwd: repo, env
+  });
+  assert.equal(run(['--dsh'], '23afa0f5-5e88-4d43-8061-6c72727a9756'), '');
+  assert.match(run(['--dsh'], 'session-ba45323e-9a89-4679-87b8-ec0fb65d2d4b'), /additionalContext/);
+  // Claude Code sessions are bare UUIDs too: without --dsh they keep their brief
+  assert.match(run([], '7f3c2a10-0000-4000-8000-000000000001'), /additionalContext/);
+});
+
 test('isDelegatedChild reads a DSH 0.2.x session.v4 header too', zstd, () => {
   const home = tmp('scope-mcp-home-');
   const dir = join(home, '.dsh', 'sessions', '--ws--', 'c4');

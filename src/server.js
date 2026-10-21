@@ -71,10 +71,16 @@ const hookIndex = argv.indexOf('hook');
 if (hookIndex !== -1) {
   const { handleHook, isDelegatedChild, readStdinPayload } = await import('./hooks.js');
   const payload = readStdinPayload();
-  const workspace = payload.cwd || process.cwd();
+  // DSH 0.2.x drops cwd from the payload; the hook then runs in the session workspace.
+  const workspace = payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   // Outside a scoped repository, and inside delegated DSH children, the hooks do nothing:
   // no state file is created and nothing is injected.
-  if (!explicitDb && (!hasScope(workspace) || isDelegatedChild(payload.session_id))) process.exit(0);
+  // Under DSH (hooks.dsh.json passes --dsh) a delegated child is also recognised by its id: DSH
+  // names top-level sessions session-<uuid> and workflow/subagent children a bare <uuid>, and a
+  // child's SessionStart hook can run before its log - and header - exists (DSH 0.2.1).
+  const sid = String(payload.session_id || '');
+  const dshChild = argv.includes('--dsh') && sid !== '' && !sid.startsWith('session-');
+  if (!explicitDb && (!hasScope(workspace) || dshChild || isDelegatedChild(sid))) process.exit(0);
   const store = new ProjectState(explicitDb ?? defaultDbPath(workspace));
   const out = handleHook(argv[hookIndex + 1] ?? payload.hook_event_name ?? 'stop', store, payload);
   if (out) process.stdout.write(`${out}\n`);

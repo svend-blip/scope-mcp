@@ -489,6 +489,8 @@ scope-mcp applies only to a repository that has its own `SCOPE.md`. Elsewhere it
 
 DSH Web starts **one** scope-mcp server for all its sessions, with one fixed `cwd`, so the server cannot tell which repository a call belongs to. Every tool therefore takes an optional `workspace` argument — the absolute path of the repository the agent works in — and keeps that repository's state in `<workspace>/.scope-mcp/state.db`. Set `SCOPE_MCP_REQUIRE_WORKSPACE=1` in the server's `env` for a shared server: a call without `workspace` is then refused instead of landing in the server's own directory, which is how one project's state used to reach every session.
 
+DSH profiles should point `configPath` at `hooks.dsh.json`: the same hooks with `--dsh`, under which a session whose id is a bare UUID (DSH names top-level sessions `session-<uuid>`) counts as a child even before its log exists - DSH 0.2.x fires a child's SessionStart before writing its header. Claude Code keeps `hooks.json`; its session ids are bare UUIDs and must keep their brief.
+
 The hooks also stay out of delegated DSH children (workflow and subagent runs, session header `origin: "subagent"`): those get their task from the parent, and a resume brief appended after it hijacks it — a review child on gpt-oss-120b followed the brief instead of reviewing (2026-10-20).
 
 Note for programmatic clients: call tools with the object form `callTool({ name, arguments })`. Some SDK client builds treat the two-positional-argument shorthand inconsistently.
